@@ -176,4 +176,12 @@ pub fn build(b: *std.Build) void {
         run_echo_compat.addArgs(args);
     }
     run_echo_step.dependOn(&run_echo_compat.step);
+
+    // Module exports for external dependency usage
+    const telegram_module = b.addModule("telegram", .{
+        .root_source_file = b.path("src/telegram.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    telegram_module.linkLibrary(lib);
 }
