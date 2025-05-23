@@ -2687,3 +2687,335 @@ pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
         .removed_chat_boost = if (obj.get("removed_chat_boost")) |val| val else null,
     };
 }
+
+// ===== UNIT TESTS =====
+
+/// Unit tests for the most critical Telegram Bot API functionality
+///
+/// These tests verify the core operations that any Telegram bot depends on:
+/// 1. Bot initialization and cleanup
+/// 2. HTTP client setup
+/// 3. Request parameter creation
+/// 4. Update parsing from JSON
+/// 5. API response error handling
+const testing = std.testing;
+
+test "Bot initialization and cleanup" {
+    const allocator = testing.allocator;
+
+    // Test HTTPClient initialization
+    var client = try HTTPClient.init(allocator);
+    defer client.deinit();
+
+    // Test valid bot initialization
+    {
+        var bot = try Bot.init(allocator, "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", &client);
+        defer bot.deinit();
+
+        try testing.expect(bot.token.len > 0);
+        try testing.expectEqualStrings("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", bot.token);
+        try testing.expectEqual(false, bot.debug);
+        try testing.expectEqualStrings("https://api.telegram.org", bot.api_endpoint);
+        try testing.expect(bot.self_user == null);
+    }
+
+    // Test invalid bot initialization (empty token)
+    {
+        const result = Bot.init(allocator, "", &client);
+        try testing.expectError(BotError.InvalidToken, result);
+    }
+
+    // Test custom API endpoint
+    {
+        var bot = try Bot.init(allocator, "test_token", &client);
+        defer bot.deinit();
+
+        bot.setAPIEndpoint("http://localhost:8081");
+        try testing.expectEqualStrings("http://localhost:8081", bot.api_endpoint);
+    }
+}
+
+test "Request parameter creation and formatting" {
+    const allocator = testing.allocator;
+
+    // Test number formatting functions
+    {
+        var buffer: [32]u8 = undefined;
+
+        // Test i64 formatting
+        const i64_result = Bot.formatI64(123456789012345, &buffer);
+        try testing.expectEqualStrings("123456789012345", i64_result);
+
+        // Test negative i64
+        const i64_neg_result = Bot.formatI64(-123456789, &buffer);
+        try testing.expectEqualStrings("-123456789", i64_neg_result);
+
+        // Test i32 formatting
+        const i32_result = Bot.formatI32(123456, &buffer);
+        try testing.expectEqualStrings("123456", i32_result);
+
+        // Test f64 formatting
+        const f64_result = Bot.formatF64(123.456, &buffer);
+        try testing.expect(std.mem.startsWith(u8, f64_result, "123.45"));
+    }
+
+    // Test parameter creation with json_utils
+    {
+        const TestParams = struct {
+            chat_id: i64,
+            text: []const u8,
+            timeout: ?i32 = null,
+        };
+
+        const params_struct = TestParams{
+            .chat_id = 123456789,
+            .text = "Test message",
+            .timeout = 30,
+        };
+
+        var params = try json_utils.createParams(allocator, params_struct);
+        defer json_utils.cleanupParamsWithValue(allocator, &params, params_struct);
+
+        try testing.expectEqualStrings("123456789", params.get("chat_id").?);
+        try testing.expectEqualStrings("Test message", params.get("text").?);
+        try testing.expectEqualStrings("30", params.get("timeout").?);
+        try testing.expectEqual(@as(usize, 3), params.count());
+    }
+}
+
+test "Update parsing from JSON" {
+    const allocator = testing.allocator;
+
+    // Test valid message update parsing
+    {
+        const json_string =
+            \\{
+            \\  "update_id": 123456,
+            \\  "message": {
+            \\    "message_id": 1,
+            \\    "date": 1609459200,
+            \\    "text": "Hello, bot!",
+            \\    "from": {
+            \\      "id": 987654321,
+            \\      "is_bot": false,
+            \\      "first_name": "John",
+            \\      "username": "john_doe"
+            \\    },
+            \\    "chat": {
+            \\      "id": 987654321,
+            \\      "type": "private",
+            \\      "first_name": "John",
+            \\      "username": "john_doe"
+            \\    }
+            \\  }
+            \\}
+        ;
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_string, .{});
+        defer parsed.deinit();
+
+        var update = try parseUpdate(allocator, parsed.value);
+        defer update.deinit(allocator);
+
+        try testing.expectEqual(@as(i32, 123456), update.update_id);
+        try testing.expect(update.message != null);
+        try testing.expectEqual(@as(i32, 1), update.message.?.message_id);
+        try testing.expectEqualStrings("Hello, bot!", update.message.?.text.?);
+        try testing.expectEqual(@as(i64, 987654321), update.message.?.from.?.id);
+        try testing.expectEqualStrings("John", update.message.?.from.?.first_name);
+        try testing.expectEqual(@as(i64, 987654321), update.message.?.chat.id);
+        try testing.expectEqualStrings("private", update.message.?.chat.type);
+    }
+
+    // Test callback query update parsing
+    {
+        const json_string =
+            \\{
+            \\  "update_id": 789012,
+            \\  "callback_query": {
+            \\    "id": "callback123",
+            \\    "from": {
+            \\      "id": 987654321,
+            \\      "is_bot": false,
+            \\      "first_name": "Alice"
+            \\    },
+            \\    "chat_instance": "chat_instance_123",
+            \\    "data": "button_clicked"
+            \\  }
+            \\}
+        ;
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_string, .{});
+        defer parsed.deinit();
+
+        var update = try parseUpdate(allocator, parsed.value);
+        defer update.deinit(allocator);
+
+        try testing.expectEqual(@as(i32, 789012), update.update_id);
+        try testing.expect(update.callback_query != null);
+        try testing.expectEqualStrings("callback123", update.callback_query.?.id);
+        try testing.expectEqualStrings("button_clicked", update.callback_query.?.data.?);
+        try testing.expectEqual(@as(i64, 987654321), update.callback_query.?.from.id);
+        try testing.expectEqualStrings("Alice", update.callback_query.?.from.first_name);
+    }
+
+    // Test invalid JSON handling
+    {
+        const invalid_json = "{ invalid json }";
+        const result = std.json.parseFromSlice(std.json.Value, allocator, invalid_json, .{});
+        try testing.expectError(error.SyntaxError, result);
+    }
+}
+
+test "API response structure parsing" {
+    const allocator = testing.allocator;
+
+    // Test successful API response
+    {
+        const success_response =
+            \\{
+            \\  "ok": true,
+            \\  "result": {
+            \\    "id": 123456789,
+            \\    "is_bot": true,
+            \\    "first_name": "Test Bot",
+            \\    "username": "test_bot"
+            \\  }
+            \\}
+        ;
+
+        const parsed = try std.json.parseFromSlice(APIResponse, allocator, success_response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        try testing.expectEqual(true, parsed.value.ok);
+        try testing.expect(parsed.value.error_code == null);
+        try testing.expect(parsed.value.description == null);
+    }
+
+    // Test error API response
+    {
+        const error_response =
+            \\{
+            \\  "ok": false,
+            \\  "error_code": 400,
+            \\  "description": "Bad Request: chat not found"
+            \\}
+        ;
+
+        const parsed = try std.json.parseFromSlice(APIResponse, allocator, error_response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        try testing.expectEqual(false, parsed.value.ok);
+        try testing.expectEqual(@as(i32, 400), parsed.value.error_code.?);
+        try testing.expectEqualStrings("Bad Request: chat not found", parsed.value.description.?);
+    }
+
+    // Test APIResponseWithResult structure
+    {
+        const result_response =
+            \\{
+            \\  "ok": true,
+            \\  "result": [
+            \\    {"update_id": 1, "message": {"message_id": 1, "date": 1609459200, "chat": {"id": 123, "type": "private"}}},
+            \\    {"update_id": 2, "message": {"message_id": 2, "date": 1609459201, "chat": {"id": 124, "type": "private"}}}
+            \\  ]
+            \\}
+        ;
+
+        const parsed = try std.json.parseFromSlice(APIResponseWithResult, allocator, result_response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        try testing.expectEqual(true, parsed.value.ok);
+        try testing.expect(parsed.value.result != null);
+        try testing.expect(parsed.value.result.?.array.items.len == 2);
+    }
+}
+
+test "Memory management and cleanup" {
+    const allocator = testing.allocator;
+
+    // Test User creation and cleanup
+    {
+        var user = User{
+            .id = 123456789,
+            .is_bot = false,
+            .first_name = try allocator.dupe(u8, "Test User"),
+            .last_name = try allocator.dupe(u8, "Last Name"),
+            .username = try allocator.dupe(u8, "test_user"),
+            .language_code = try allocator.dupe(u8, "en"),
+        };
+        defer user.deinit(allocator);
+
+        try testing.expectEqual(@as(i64, 123456789), user.id);
+        try testing.expectEqualStrings("Test User", user.first_name);
+        try testing.expectEqualStrings("Last Name", user.last_name.?);
+        try testing.expectEqualStrings("test_user", user.username.?);
+        try testing.expectEqualStrings("en", user.language_code.?);
+    }
+
+    // Test Chat creation and cleanup
+    {
+        var chat = Chat{
+            .id = 987654321,
+            .type = try allocator.dupe(u8, "private"),
+            .title = try allocator.dupe(u8, "Test Chat"),
+            .username = try allocator.dupe(u8, "test_chat"),
+            .first_name = try allocator.dupe(u8, "First"),
+            .last_name = try allocator.dupe(u8, "Last"),
+        };
+        defer chat.deinit(allocator);
+
+        try testing.expectEqual(@as(i64, 987654321), chat.id);
+        try testing.expectEqualStrings("private", chat.type);
+        try testing.expectEqualStrings("Test Chat", chat.title.?);
+        try testing.expectEqualStrings("test_chat", chat.username.?);
+    }
+
+    // Test MessageEntity creation and cleanup
+    {
+        var entity = MessageEntity{
+            .type = try allocator.dupe(u8, "mention"),
+            .offset = 0,
+            .length = 5,
+            .url = try allocator.dupe(u8, "https://example.com"),
+            .language = try allocator.dupe(u8, "javascript"),
+        };
+        defer entity.deinit(allocator);
+
+        try testing.expectEqualStrings("mention", entity.type);
+        try testing.expectEqual(@as(i32, 0), entity.offset);
+        try testing.expectEqual(@as(i32, 5), entity.length);
+        try testing.expectEqualStrings("https://example.com", entity.url.?);
+        try testing.expectEqualStrings("javascript", entity.language.?);
+    }
+
+    // Test InlineKeyboardButton creation and cleanup
+    {
+        var button = InlineKeyboardButton{
+            .text = try allocator.dupe(u8, "Click Me"),
+            .callback_data = try allocator.dupe(u8, "btn_click"),
+            .url = try allocator.dupe(u8, "https://telegram.org"),
+        };
+        defer button.deinit(allocator);
+
+        try testing.expectEqualStrings("Click Me", button.text);
+        try testing.expectEqualStrings("btn_click", button.callback_data.?);
+        try testing.expectEqualStrings("https://telegram.org", button.url.?);
+    }
+
+    // Test File creation and cleanup
+    {
+        var file = File{
+            .file_id = try allocator.dupe(u8, "BAADBAADrQADBREAAYlIjHkZFYSNAg"),
+            .file_unique_id = try allocator.dupe(u8, "AgADrQADBREAAQ"),
+            .file_size = 1024,
+            .file_path = try allocator.dupe(u8, "photos/file_123.jpg"),
+        };
+        defer file.deinit(allocator);
+
+        try testing.expectEqualStrings("BAADBAADrQADBREAAYlIjHkZFYSNAg", file.file_id);
+        try testing.expectEqualStrings("AgADrQADBREAAQ", file.file_unique_id);
+        try testing.expectEqual(@as(i32, 1024), file.file_size.?);
+        try testing.expectEqualStrings("photos/file_123.jpg", file.file_path.?);
+    }
+}
