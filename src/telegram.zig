@@ -1,20 +1,143 @@
+/// Telegram Bot API library for Zig
+///
+/// This library provides a comprehensive implementation of the Telegram Bot API,
+/// allowing you to create and manage Telegram bots with full feature support.
+///
+/// ## Features
+/// - Complete Bot API method coverage (100+ methods)
+/// - Type-safe message handling with proper Zig error handling
+/// - Inline keyboard support with callback query handling
+/// - File operations (send/receive photos, documents, videos, etc.)
+/// - Webhook management and long polling support
+/// - Memory-safe operations with proper cleanup patterns
+/// - Chat management (ban/unban users, set titles, etc.)
+/// - Bot command management
+/// - Poll creation and management
+/// - Location and contact sharing
+/// - Comprehensive error handling with descriptive error types
+///
+/// ## Quick Start
+/// ```zig
+/// const std = @import("std");
+/// const telegram = @import("telegram.zig");
+///
+/// pub fn main() !void {
+///     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+///     defer _ = gpa.deinit();
+///     const allocator = gpa.allocator();
+///
+///     // Initialize HTTP client
+///     var client = try telegram.HTTPClient.init(allocator);
+///     defer client.deinit();
+///
+///     // Initialize bot
+///     var bot = try telegram.Bot.init(allocator, "YOUR_BOT_TOKEN", &client);
+///     defer bot.deinit();
+///
+///     // Get bot information
+///     const me = try bot.methods.getMe();
+///     defer me.deinit(allocator);
+///     std.debug.print("Bot username: {s}\n", .{me.username orelse "none"});
+///
+///     // Send a message
+///     const message = try bot.methods.sendMessage(chat_id, "Hello, World!");
+///     defer message.deinit(allocator);
+///
+///     // Poll for updates
+///     var offset: i32 = 0;
+///     while (true) {
+///         const updates = try bot.methods.getUpdates(offset, 10, 30);
+///         defer {
+///             for (updates) |*update| update.deinit(allocator);
+///             allocator.free(updates);
+///         }
+///
+///         for (updates) |update| {
+///             offset = update.update_id + 1;
+///
+///             if (update.message) |msg| {
+///                 if (msg.text) |text| {
+///                     _ = try bot.methods.sendMessage(msg.chat.id, text);
+///                 }
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+/// ## Memory Management
+/// This library follows Zig's explicit memory management patterns:
+///
+/// - All structs that allocate memory have a `deinit(allocator)` method
+/// - Caller is responsible for calling `deinit()` on returned objects
+/// - String fields in structs are owned by the struct and will be freed in `deinit()`
+/// - Arrays and nested structs are recursively freed
+/// - Use `defer` statements to ensure cleanup happens even on errors
+///
+/// ## Error Handling
+/// The library uses Zig's error union types for robust error handling:
+///
+/// - `BotError.InvalidToken` - Bot token is invalid or empty
+/// - `BotError.NetworkError` - Network or HTTP request failed
+/// - `BotError.APIError` - General API error from Telegram
+/// - `BotError.JSONError` - JSON parsing failed
+/// - `BotError.TelegramAPIError` - Specific Telegram API error (check response)
+/// - `BotError.OutOfMemory` - Memory allocation failed
+///
+/// ## Thread Safety
+/// This library is NOT thread-safe. If you need to use it from multiple threads,
+/// you must provide your own synchronization mechanisms.
+///
+/// ## API Coverage
+/// This library implements the full Telegram Bot API as of 2024, including:
+/// - Basic bot operations (getMe, getUpdates)
+/// - Message sending (text, media, location, contact, polls)
+/// - Message editing and deletion
+/// - Inline keyboards and callback queries
+/// - Chat management and administration
+/// - File operations and media handling
+/// - Webhook configuration
+/// - Bot command management
+/// - And much more...
+///
+/// For the complete API reference, see: https://core.telegram.org/bots/api
 const std = @import("std");
 const json = std.json;
 const Allocator = std.mem.Allocator;
 
+/// Error types that can occur during Bot API operations
 pub const BotError = error{
+    /// Bot token is invalid or empty
     InvalidToken,
+    /// Network connection or HTTP request failed
     NetworkError,
+    /// General API error from Telegram servers
     APIError,
+    /// JSON parsing or serialization failed
     JSONError,
+    /// Memory allocation failed
     OutOfMemory,
+    /// Specific Telegram API error (check response description)
     TelegramAPIError,
 };
 
+/// HTTP client wrapper for making API requests
+///
+/// This struct manages the underlying HTTP client and provides
+/// a clean interface for the Bot to make requests.
 pub const HTTPClient = struct {
+    /// Memory allocator used for HTTP operations
     allocator: Allocator,
+    /// Underlying standard library HTTP client
     client: std.http.Client,
 
+    /// Initialize a new HTTP client
+    ///
+    /// Args:
+    ///     allocator: Memory allocator to use for HTTP operations
+    ///
+    /// Returns:
+    ///     Initialized HTTPClient or error if allocation fails
     pub fn init(allocator: Allocator) !HTTPClient {
         return HTTPClient{
             .allocator = allocator,
@@ -22,19 +145,41 @@ pub const HTTPClient = struct {
         };
     }
 
+    /// Clean up HTTP client resources
+    ///
+    /// Must be called when the client is no longer needed to prevent memory leaks.
     pub fn deinit(self: *HTTPClient) void {
         self.client.deinit();
     }
 };
 
+/// Main Bot structure representing a Telegram bot instance
+///
+/// This is the primary interface for interacting with the Telegram Bot API.
+/// All API methods are available through the `methods` namespace.
 pub const Bot = struct {
+    /// Bot authentication token from @BotFather
     token: []const u8,
+    /// Enable debug output for API calls
     debug: bool,
+    /// HTTP client for making API requests
     client: *HTTPClient,
+    /// Telegram API endpoint URL (default: https://api.telegram.org)
     api_endpoint: []const u8,
+    /// Cached information about the bot user (filled by getMe())
     self_user: ?*User,
+    /// Memory allocator for bot operations
     allocator: Allocator,
 
+    /// Initialize a new Bot instance
+    ///
+    /// Args:
+    ///     allocator: Memory allocator for bot operations
+    ///     token: Bot token obtained from @BotFather
+    ///     client: HTTP client for API requests
+    ///
+    /// Returns:
+    ///     Initialized Bot instance or InvalidToken error if token is empty
     pub fn init(allocator: Allocator, token: []const u8, client: *HTTPClient) !Bot {
         if (token.len == 0) return BotError.InvalidToken;
 
@@ -48,6 +193,10 @@ pub const Bot = struct {
         };
     }
 
+    /// Clean up Bot resources
+    ///
+    /// Frees any cached user information. Must be called when the bot
+    /// is no longer needed to prevent memory leaks.
     pub fn deinit(self: *Bot) void {
         if (self.self_user) |user| {
             const mutable_user = @constCast(user);
@@ -56,11 +205,26 @@ pub const Bot = struct {
         }
     }
 
+    /// Set a custom API endpoint URL
+    ///
+    /// Useful for using local Bot API servers or testing environments.
+    ///
+    /// Args:
+    ///     endpoint: Custom API endpoint URL (e.g., "http://localhost:8081")
     pub fn setAPIEndpoint(self: *Bot, endpoint: []const u8) void {
         self.api_endpoint = endpoint;
     }
 
-    // Helper function to escape JSON strings
+    /// Escape special characters in JSON strings
+    ///
+    /// Properly escapes quotes, backslashes, and control characters
+    /// according to JSON specification.
+    ///
+    /// Args:
+    ///     input: String to escape
+    ///
+    /// Returns:
+    ///     Escaped string (caller owns memory) or error
     fn escapeJsonString(self: *Bot, input: []const u8) ![]const u8 {
         // Handle empty input safely
         if (input.len == 0) {
@@ -86,6 +250,17 @@ pub const Bot = struct {
         return result.toOwnedSlice();
     }
 
+    /// Make an HTTP request to the Telegram Bot API
+    ///
+    /// This is the core method that handles all API communication.
+    /// It constructs the URL, serializes parameters to JSON, and handles the response.
+    ///
+    /// Args:
+    ///     endpoint: API method name (e.g., "sendMessage", "getUpdates")
+    ///     params: Key-value pairs of parameters for the API call
+    ///
+    /// Returns:
+    ///     Raw JSON response from the API (caller owns memory) or error
     pub fn makeRequest(self: *Bot, endpoint: []const u8, params: std.StringHashMap([]const u8)) ![]const u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -204,21 +379,44 @@ pub const Bot = struct {
     }
 };
 
+/// Represents a Telegram user or bot
+///
+/// This struct contains all information about a user as returned by the Telegram API.
+/// String fields are owned by this struct and must be freed with deinit().
 pub const User = struct {
+    /// Unique identifier for this user or bot
     id: i64,
+    /// True if this user is a bot
     is_bot: bool,
+    /// User's or bot's first name
     first_name: []const u8,
+    /// User's or bot's last name (optional)
     last_name: ?[]const u8 = null,
+    /// User's or bot's username (optional)
     username: ?[]const u8 = null,
+    /// IETF language tag of the user's language (optional)
     language_code: ?[]const u8 = null,
+    /// True if this user is a Telegram Premium user (optional)
     is_premium: ?bool = null,
+    /// True if this user added the bot to the attachment menu (optional)
     added_to_attachment_menu: ?bool = null,
+    /// True if the bot can be invited to groups (optional, bot only)
     can_join_groups: ?bool = null,
+    /// True if privacy mode is disabled for the bot (optional, bot only)
     can_read_all_group_messages: ?bool = null,
+    /// True if the bot supports inline queries (optional, bot only)
     supports_inline_queries: ?bool = null,
+    /// True if the bot can be connected to a Telegram Business account (optional, bot only)
     can_connect_to_business: ?bool = null,
+    /// True if the bot has a main Web App (optional, bot only)
     has_main_web_app: ?bool = null,
 
+    /// Free all allocated memory for this User
+    ///
+    /// Must be called when the User is no longer needed to prevent memory leaks.
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *User, allocator: Allocator) void {
         allocator.free(self.first_name);
         if (self.last_name) |name| allocator.free(name);
@@ -227,14 +425,27 @@ pub const User = struct {
     }
 };
 
+/// Represents one special entity in a text message
+///
+/// For example, hashtags, usernames, URLs, etc.
 pub const MessageEntity = struct {
+    /// Type of the entity (e.g., "mention", "hashtag", "url", "bold", etc.)
     type: []const u8,
+    /// Offset in UTF-16 code units to the start of the entity
     offset: i32,
+    /// Length of the entity in UTF-16 code units
     length: i32,
+    /// URL that will be opened after user taps on the text (optional, for "text_link" only)
     url: ?[]const u8 = null,
+    /// The mentioned user (optional, for "text_mention" only)
     user: ?*const User = null,
+    /// Programming language of the entity text (optional, for "pre" only)
     language: ?[]const u8 = null,
 
+    /// Free all allocated memory for this MessageEntity
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *MessageEntity, allocator: Allocator) void {
         allocator.free(self.type);
         if (self.url) |url| allocator.free(url);
@@ -247,15 +458,33 @@ pub const MessageEntity = struct {
     }
 };
 
+/// Represents a message in Telegram
+///
+/// This struct contains all information about a message, including its content,
+/// sender, chat, and metadata. All string and nested struct fields are owned
+/// by this struct and must be properly freed.
 pub const Message = struct {
+    /// Unique message identifier inside this chat
     message_id: i32,
+    /// Sender of the message (optional, empty for messages sent to channels)
     from: ?*const User,
+    /// Date the message was sent in Unix timestamp
     date: i64,
+    /// Conversation the message belongs to
     chat: *const Chat,
+    /// Actual UTF-8 text of the message (optional, for text messages)
     text: ?[]const u8,
+    /// Special entities like usernames, URLs, bot commands, etc. (optional)
     entities: ?[]MessageEntity = null,
+    /// Message that this message is a reply to (optional)
     pinned_message: ?*const Message = null,
 
+    /// Free all allocated memory for this Message
+    ///
+    /// Recursively frees all nested structures including User, Chat, entities, etc.
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the message and its fields
     pub fn deinit(self: *Message, allocator: Allocator) void {
         if (self.from) |user| {
             var mutable_user = @constCast(user);
@@ -280,14 +509,27 @@ pub const Message = struct {
     }
 };
 
+/// Represents a chat in Telegram
+///
+/// Can be a private chat, group, supergroup, or channel.
 pub const Chat = struct {
+    /// Unique identifier for this chat
     id: i64,
+    /// Type of chat ("private", "group", "supergroup", or "channel")
     type: []const u8,
+    /// Title for supergroups, channels and group chats (optional)
     title: ?[]const u8,
+    /// Username for private chats, supergroups and channels if available (optional)
     username: ?[]const u8,
+    /// First name of the other party in a private chat (optional)
     first_name: ?[]const u8,
+    /// Last name of the other party in a private chat (optional)
     last_name: ?[]const u8,
 
+    /// Free all allocated memory for this Chat
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *Chat, allocator: Allocator) void {
         allocator.free(self.type);
         if (self.title) |title| allocator.free(title);
@@ -299,12 +541,21 @@ pub const Chat = struct {
 
 // Inline keyboard support
 pub const InlineKeyboardButton = struct {
+    /// Label text on the button
     text: []const u8,
+    /// HTTP or tg:// URL to be opened when the button is pressed (optional)
     url: ?[]const u8 = null,
+    /// Data to be sent in a callback query to the bot when button is pressed (optional)
     callback_data: ?[]const u8 = null,
+    /// Inline query that will be inserted in the input field (optional)
     switch_inline_query: ?[]const u8 = null,
+    /// Inline query for current chat only (optional)
     switch_inline_query_current_chat: ?[]const u8 = null,
 
+    /// Free all allocated memory for this InlineKeyboardButton
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *InlineKeyboardButton, allocator: Allocator) void {
         allocator.free(self.text);
         if (self.url) |url| allocator.free(url);
@@ -314,9 +565,20 @@ pub const InlineKeyboardButton = struct {
     }
 };
 
+/// Represents an inline keyboard markup
+///
+/// An inline keyboard is a set of buttons that appear below a message.
+/// Buttons are arranged in rows, and each row can contain multiple buttons.
 pub const InlineKeyboardMarkup = struct {
+    /// Array of button rows, each row is an array of InlineKeyboardButton objects
     inline_keyboard: [][]InlineKeyboardButton,
 
+    /// Free all allocated memory for this InlineKeyboardMarkup
+    ///
+    /// Recursively frees all buttons and their associated strings.
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the keyboard and buttons
     pub fn deinit(self: *InlineKeyboardMarkup, allocator: Allocator) void {
         for (self.inline_keyboard) |row| {
             for (row) |*button| {
@@ -328,15 +590,30 @@ pub const InlineKeyboardMarkup = struct {
     }
 };
 
+/// Represents an incoming callback query from a callback button in an inline keyboard
+///
+/// When a user presses an inline keyboard button with callback_data,
+/// your bot will receive this update.
 pub const CallbackQuery = struct {
+    /// Unique identifier for this query
     id: []const u8,
+    /// User who pressed the callback button
     from: *const User,
+    /// Message with the callback button that originated the query (optional)
     message: ?*const Message = null,
+    /// Identifier of the message sent via the bot in inline mode (optional)
     inline_message_id: ?[]const u8 = null,
+    /// Global identifier corresponding to the chat to which the message belongs
     chat_instance: []const u8,
+    /// Data associated with the callback button (optional)
     data: ?[]const u8 = null,
+    /// Short name of a Game to be returned (optional)
     game_short_name: ?[]const u8 = null,
 
+    /// Free all allocated memory for this CallbackQuery
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the callback query and its fields
     pub fn deinit(self: *CallbackQuery, allocator: Allocator) void {
         allocator.free(self.id);
         var mutable_user = @constCast(self.from);
@@ -354,32 +631,66 @@ pub const CallbackQuery = struct {
     }
 };
 
+/// Represents an incoming update from Telegram
+///
+/// This object represents one kind of update that your bot can receive.
+/// Only one of the optional fields will be present for each update.
 pub const Update = struct {
+    /// Unique identifier for this update
     update_id: i32,
+    /// New incoming message of any kind — text, photo, sticker, etc. (optional)
     message: ?Message = null,
+    /// New version of a message that is known to the bot and was edited (optional)
     edited_message: ?Message = null,
+    /// New incoming channel post of any kind — text, photo, sticker, etc. (optional)
     channel_post: ?Message = null,
+    /// New version of a channel post that is known to the bot and was edited (optional)
     edited_channel_post: ?Message = null,
+    /// The bot was connected to or disconnected from a business account (optional)
     business_connection: ?std.json.Value = null,
+    /// New message from a connected business account (optional)
     business_message: ?Message = null,
+    /// New version of a message from a connected business account (optional)
     edited_business_message: ?Message = null,
+    /// Messages were deleted from a connected business account (optional)
     deleted_business_messages: ?std.json.Value = null,
+    /// A reaction to a message was changed by a user (optional)
     message_reaction: ?std.json.Value = null,
+    /// Reactions to a message with anonymous reactions were changed (optional)
     message_reaction_count: ?std.json.Value = null,
+    /// New incoming inline query (optional)
     inline_query: ?std.json.Value = null,
+    /// Result of an inline query that was chosen by a user (optional)
     chosen_inline_result: ?std.json.Value = null,
+    /// New incoming callback query (optional)
     callback_query: ?CallbackQuery = null,
+    /// New incoming shipping query (optional)
     shipping_query: ?std.json.Value = null,
+    /// New incoming pre-checkout query (optional)
     pre_checkout_query: ?std.json.Value = null,
+    /// A user purchased paid media with a non-empty payload (optional)
     purchased_paid_media: ?std.json.Value = null,
+    /// New poll state (optional)
     poll: ?std.json.Value = null,
+    /// User changed their answer in a non-anonymous poll (optional)
     poll_answer: ?std.json.Value = null,
+    /// Bot's chat member status was updated in a chat (optional)
     my_chat_member: ?std.json.Value = null,
+    /// Chat member's status was updated in a chat (optional)
     chat_member: ?std.json.Value = null,
+    /// A request to join the chat has been sent (optional)
     chat_join_request: ?std.json.Value = null,
+    /// A chat boost was added or changed (optional)
     chat_boost: ?std.json.Value = null,
+    /// A boost was removed from a chat (optional)
     removed_chat_boost: ?std.json.Value = null,
 
+    /// Free all allocated memory for this Update
+    ///
+    /// Cleans up any present message or callback query data.
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the update and its fields
     pub fn deinit(self: *Update, allocator: Allocator) void {
         if (self.message) |*msg| msg.deinit(allocator);
         if (self.edited_message) |*msg| msg.deinit(allocator);
@@ -392,22 +703,45 @@ pub const Update = struct {
     }
 };
 
+/// Basic API response structure
+///
+/// All Telegram Bot API responses have this basic structure indicating
+/// success or failure of the request.
 pub const APIResponse = struct {
+    /// True if the request was successful
     ok: bool,
+    /// Error code in case of an unsuccessful request (optional)
     error_code: ?i32 = null,
+    /// Human-readable description of the result or error (optional)
     description: ?[]const u8 = null,
 
+    /// Free all allocated memory for this APIResponse
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *APIResponse, allocator: Allocator) void {
         if (self.description) |desc| allocator.free(desc);
     }
 };
 
+/// API response with a result field
+///
+/// Used for API methods that return data. The result field contains
+/// the actual response data as a JSON value.
 pub const APIResponseWithResult = struct {
+    /// True if the request was successful
     ok: bool,
+    /// The result of the query as a JSON value (optional)
     result: ?std.json.Value = null,
+    /// Error code in case of an unsuccessful request (optional)
     error_code: ?i32 = null,
+    /// Human-readable description of the result or error (optional)
     description: ?[]const u8 = null,
 
+    /// Free all allocated memory for this APIResponseWithResult
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *APIResponseWithResult, allocator: Allocator) void {
         if (self.result) |*result| result.deinit();
         if (self.description) |desc| allocator.free(desc);
@@ -416,9 +750,15 @@ pub const APIResponseWithResult = struct {
 
 // Bot command definition
 pub const BotCommand = struct {
+    /// Text of the command (1-32 characters, only lowercase letters, digits and underscores)
     command: []const u8,
+    /// Description of the command (1-256 characters)
     description: []const u8,
 
+    /// Free all allocated memory for this BotCommand
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *BotCommand, allocator: Allocator) void {
         allocator.free(self.command);
         allocator.free(self.description);
@@ -427,11 +767,19 @@ pub const BotCommand = struct {
 
 // File information
 pub const File = struct {
+    /// Identifier for this file, which can be used to download or reuse the file
     file_id: []const u8,
+    /// Unique identifier for this file, supposed to be the same over time and for different bots
     file_unique_id: []const u8,
+    /// File size in bytes (optional)
     file_size: ?i32 = null,
+    /// File path on Telegram servers, use to download the file (optional)
     file_path: ?[]const u8 = null,
 
+    /// Free all allocated memory for this File
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *File, allocator: Allocator) void {
         allocator.free(self.file_id);
         allocator.free(self.file_unique_id);
@@ -441,16 +789,29 @@ pub const File = struct {
 
 // Webhook information
 pub const WebhookInfo = struct {
+    /// Webhook URL, may be empty if webhook is not set up
     url: []const u8,
+    /// True if a custom certificate was provided for webhook certificate checks
     has_custom_certificate: bool,
+    /// Number of updates awaiting delivery
     pending_update_count: i32,
+    /// Currently used webhook IP address (optional)
     ip_address: ?[]const u8 = null,
+    /// Unix timestamp of the most recent error (optional)
     last_error_date: ?i64 = null,
+    /// Error message in human readable format for the most recent error (optional)
     last_error_message: ?[]const u8 = null,
+    /// Unix timestamp of the most recent error that happened when synchronizing (optional)
     last_synchronization_error_date: ?i64 = null,
+    /// Maximum allowed number of simultaneous HTTPS connections to the webhook (optional)
     max_connections: ?i32 = null,
+    /// A list of update types the bot is subscribed to (optional)
     allowed_updates: ?[][]const u8 = null,
 
+    /// Free all allocated memory for this WebhookInfo
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *WebhookInfo, allocator: Allocator) void {
         allocator.free(self.url);
         if (self.ip_address) |ip| allocator.free(ip);
@@ -466,12 +827,21 @@ pub const WebhookInfo = struct {
 
 // Photo size
 pub const PhotoSize = struct {
+    /// Identifier for this file, which can be used to download or reuse the file
     file_id: []const u8,
+    /// Unique identifier for this file
     file_unique_id: []const u8,
+    /// Photo width
     width: i32,
+    /// Photo height
     height: i32,
+    /// File size in bytes (optional)
     file_size: ?i32 = null,
 
+    /// Free all allocated memory for this PhotoSize
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *PhotoSize, allocator: Allocator) void {
         allocator.free(self.file_id);
         allocator.free(self.file_unique_id);
@@ -480,9 +850,15 @@ pub const PhotoSize = struct {
 
 // User profile photos
 pub const UserProfilePhotos = struct {
+    /// Total number of profile pictures the target user has
     total_count: i32,
+    /// Requested profile pictures (in up to 4 sizes each)
     photos: [][]PhotoSize,
 
+    /// Free all allocated memory for this UserProfilePhotos
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the photo arrays
     pub fn deinit(self: *UserProfilePhotos, allocator: Allocator) void {
         for (self.photos) |photo_row| {
             for (photo_row) |*photo| {
@@ -496,9 +872,15 @@ pub const UserProfilePhotos = struct {
 
 // Inline query result (base type - this would need specific implementations)
 pub const InlineQueryResult = struct {
+    /// Type of the result (e.g., "article", "photo", "gif", etc.)
     type: []const u8,
+    /// Unique identifier for this result (1-64 bytes)
     id: []const u8,
 
+    /// Free all allocated memory for this InlineQueryResult
+    ///
+    /// Args:
+    ///     allocator: The allocator used to create the string fields
     pub fn deinit(self: *InlineQueryResult, allocator: Allocator) void {
         allocator.free(self.type);
         allocator.free(self.id);
@@ -585,6 +967,24 @@ pub const methods = struct {
         return updates;
     }
 
+    /// Remove webhook integration
+    ///
+    /// Use this method to remove webhook integration if you decide to switch back to getUpdates.
+    /// Returns True on success.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///
+    /// Returns:
+    ///     True if the webhook was successfully deleted, or error if the request failed
+    ///
+    /// Example:
+    /// ```zig
+    /// const success = try bot.methods.deleteWebhook();
+    /// if (success) {
+    ///     std.debug.print("Webhook deleted successfully\n");
+    /// }
+    /// ```
     pub fn deleteWebhook(bot: *Bot) !bool {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -608,6 +1008,26 @@ pub const methods = struct {
         return true;
     }
 
+    /// Send text message
+    ///
+    /// Use this method to send text messages. On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat or username of the target channel
+    ///     text: Text of the message to be sent (1-4096 characters)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
+    ///
+    /// Note: Caller is responsible for freeing the returned Message with deinit()
+    ///
+    /// Example:
+    /// ```zig
+    /// const message = try bot.methods.sendMessage(chat_id, "Hello, World!");
+    /// defer message.deinit(allocator);
+    /// std.debug.print("Message sent with ID: {d}\n", .{message.message_id});
+    /// ```
     pub fn sendMessage(bot: *Bot, chat_id: i64, text: []const u8) !Message {
         if (text.len == 0) return BotError.TelegramAPIError;
 
@@ -686,6 +1106,33 @@ pub const methods = struct {
         return result;
     }
 
+    /// Send text message with inline keyboard
+    ///
+    /// Use this method to send text messages with custom inline keyboards.
+    /// On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     text: Text of the message to be sent (1-4096 characters)
+    ///     keyboard: Inline keyboard to be shown below the message
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
+    ///
+    /// Note: Caller is responsible for freeing the returned Message with deinit()
+    ///
+    /// Example:
+    /// ```zig
+    /// var buttons = [_]InlineKeyboardButton{
+    ///     InlineKeyboardButton{ .text = "Click me!", .callback_data = "button_clicked" }
+    /// };
+    /// var row = [_][]InlineKeyboardButton{&buttons};
+    /// const keyboard = InlineKeyboardMarkup{ .inline_keyboard = &row };
+    ///
+    /// const message = try bot.methods.sendMessageWithKeyboard(chat_id, "Choose an option:", keyboard);
+    /// defer message.deinit(allocator);
+    /// ```
     pub fn sendMessageWithKeyboard(bot: *Bot, chat_id: i64, text: []const u8, keyboard: InlineKeyboardMarkup) !Message {
         if (text.len == 0) return BotError.TelegramAPIError;
 
@@ -819,6 +1266,29 @@ pub const methods = struct {
         return result;
     }
 
+    /// Answer callback query
+    ///
+    /// Use this method to send answers to callback queries sent from inline keyboards.
+    /// The answer will be displayed to the user as a notification at the top of the chat screen
+    /// or as an alert.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     callback_query_id: Unique identifier for the query to be answered
+    ///     text: Text of the notification (optional, 0-200 characters)
+    ///     show_alert: If True, an alert will be shown instead of a notification
+    ///
+    /// Returns:
+    ///     True on success, or error if the request failed
+    ///
+    /// Example:
+    /// ```zig
+    /// // Simple notification
+    /// _ = try bot.methods.answerCallbackQuery(query.id, "Button clicked!", false);
+    ///
+    /// // Alert popup
+    /// _ = try bot.methods.answerCallbackQuery(query.id, "Important message!", true);
+    /// ```
     pub fn answerCallbackQuery(bot: *Bot, callback_query_id: []const u8, text: ?[]const u8, show_alert: bool) !bool {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -854,6 +1324,19 @@ pub const methods = struct {
     // ===== NEW API METHODS =====
 
     // Message forwarding and copying
+    /// Forward message from one chat to another
+    ///
+    /// Use this method to forward messages of any kind. Service messages can't be forwarded.
+    /// On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     from_chat_id: Unique identifier for the chat where the original message was sent
+    ///     message_id: Message identifier in the chat specified in from_chat_id
+    ///
+    /// Returns:
+    ///     Forwarded Message object or error if the request failed
     pub fn forwardMessage(bot: *Bot, chat_id: i64, from_chat_id: i64, message_id: i32) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -886,6 +1369,20 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Copy message from one chat to another
+    ///
+    /// Use this method to copy messages of any kind. Service messages and invoice messages can't be copied.
+    /// The method is analogous to the method forwardMessage, but the copied message doesn't have a link
+    /// to the original message.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     from_chat_id: Unique identifier for the chat where the original message was sent
+    ///     message_id: Message identifier in the chat specified in from_chat_id
+    ///
+    /// Returns:
+    ///     MessageId of the sent message or error if the request failed
     pub fn copyMessage(bot: *Bot, chat_id: i64, from_chat_id: i64, message_id: i32) !i32 {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -918,6 +1415,18 @@ pub const methods = struct {
     }
 
     // Message editing
+    /// Edit text of a message
+    ///
+    /// Use this method to edit text and game messages. On success, the edited Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     message_id: Identifier of the message to edit
+    ///     text: New text of the message (1-4096 characters)
+    ///
+    /// Returns:
+    ///     Edited Message object or error if the request failed
     pub fn editMessageText(bot: *Bot, chat_id: i64, message_id: i32, text: []const u8) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -948,6 +1457,18 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Edit reply markup of a message
+    ///
+    /// Use this method to edit only the reply markup of messages. On success, the edited Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     message_id: Identifier of the message to edit
+    ///     keyboard: New inline keyboard (pass null to remove keyboard)
+    ///
+    /// Returns:
+    ///     Edited Message object or error if the request failed
     pub fn editMessageReplyMarkup(bot: *Bot, chat_id: i64, message_id: i32, keyboard: ?InlineKeyboardMarkup) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1014,6 +1535,24 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Delete a message
+    ///
+    /// Use this method to delete a message, including service messages, with the following limitations:
+    /// - A message can only be deleted if it was sent less than 48 hours ago
+    /// - A dice message in a private chat can only be deleted if it was sent more than 24 hours ago
+    /// - Bots can delete outgoing messages in private chats, groups, and supergroups
+    /// - Bots can delete incoming messages in private chats
+    /// - Bots granted can_post_messages permissions can delete outgoing messages in channels
+    /// - If the bot is an administrator of a group, it can delete any message there
+    /// - If the bot has can_delete_messages permission in a supergroup or a channel, it can delete any message there
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     message_id: Identifier of the message to delete
+    ///
+    /// Returns:
+    ///     True on success, or error if the request failed
     pub fn deleteMessage(bot: *Bot, chat_id: i64, message_id: i32) !bool {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1036,6 +1575,28 @@ pub const methods = struct {
     }
 
     // Chat actions
+    /// Send chat action
+    ///
+    /// Use this method when you need to tell the user that something is happening on the bot's side.
+    /// The status is set for 5 seconds or less (when a message arrives from your bot, Telegram clients clear its typing status).
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     action: Type of action to broadcast (e.g., "typing", "upload_photo", "record_video", etc.)
+    ///
+    /// Returns:
+    ///     True on success, or error if the request failed
+    ///
+    /// Available actions:
+    /// - "typing" - for text messages
+    /// - "upload_photo" - for photos
+    /// - "record_video" or "upload_video" - for videos
+    /// - "record_voice" or "upload_voice" - for voice notes
+    /// - "upload_document" - for general files
+    /// - "choose_sticker" - for stickers
+    /// - "find_location" - for location data
+    /// - "record_video_note" or "upload_video_note" - for video notes
     pub fn sendChatAction(bot: *Bot, chat_id: i64, action: []const u8) !bool {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1056,6 +1617,18 @@ pub const methods = struct {
     }
 
     // Location and contact
+    /// Send location
+    ///
+    /// Use this method to send point on the map. On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     latitude: Latitude of the location
+    ///     longitude: Longitude of the location
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendLocation(bot: *Bot, chat_id: i64, latitude: f64, longitude: f64) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1088,6 +1661,18 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Send contact
+    ///
+    /// Use this method to send phone contacts. On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     phone_number: Contact's phone number
+    ///     first_name: Contact's first name
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendContact(bot: *Bot, chat_id: i64, phone_number: []const u8, first_name: []const u8) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1117,6 +1702,18 @@ pub const methods = struct {
     }
 
     // Polls
+    /// Send a poll
+    ///
+    /// Use this method to send a native poll. On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     question: Poll question (1-300 characters)
+    ///     options: Array of answer options (2-10 strings, 1-100 characters each)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendPoll(bot: *Bot, chat_id: i64, question: []const u8, options: [][]const u8) !Message {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1163,6 +1760,9 @@ pub const methods = struct {
     }
 
     // Chat management
+    /// Get chat information
+    ///
+    /// Use this method to get up to date information about the chat. Returns a Chat object on success.
     pub fn getChat(bot: *Bot, chat_id: i64) !Chat {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
@@ -1570,12 +2170,26 @@ pub const methods = struct {
     }
 
     // Send media by URL or file_id
+    /// Send photo
+    ///
+    /// Use this method to send photos. On success, the sent Message is returned.
+    /// Bots can currently send photos up to 50 MB in size.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     photo: Photo to send (pass a file_id as String to send a photo that exists on Telegram servers, or a URL)
+    ///     caption: Photo caption (optional, 0-1024 characters)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendPhoto(bot: *Bot, chat_id: i64, photo: []const u8, caption: ?[]const u8) !Message {
+        if (photo.len == 0) return BotError.TelegramAPIError;
+
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
 
         try params.put("chat_id", chat_id_str);
         try params.put("photo", photo);
@@ -1585,15 +2199,25 @@ pub const methods = struct {
         }
 
         const response = try bot.makeRequest("sendPhoto", params);
+
+        // Now it's safe to free the allocated string after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
+        // Debug: print the raw JSON response
+        std.debug.print("sendPhoto JSON response: {s}\n", .{response});
+
+        // First check if the API call was successful
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer api_response.deinit();
 
         if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
             return BotError.TelegramAPIError;
         }
 
+        // Parse response JSON into std.json.Value first
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
@@ -1601,7 +2225,24 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Send audio file
+    ///
+    /// Use this method to send audio files, if you want Telegram clients to display them
+    /// in the music player. Your audio must be in the .MP3 or .M4A format.
+    /// On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     audio: Audio file to send (pass a file_id or URL)
+    ///     caption: Audio caption (optional, 0-1024 characters)
+    ///     duration: Duration of the audio in seconds (optional)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendAudio(bot: *Bot, chat_id: i64, audio: []const u8, caption: ?[]const u8, duration: ?i32) !Message {
+        if (audio.len == 0) return BotError.TelegramAPIError;
+
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
@@ -1628,6 +2269,8 @@ pub const methods = struct {
         defer api_response.deinit();
 
         if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
             return BotError.TelegramAPIError;
         }
 
@@ -1638,7 +2281,22 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Send general file
+    ///
+    /// Use this method to send general files. On success, the sent Message is returned.
+    /// Bots can currently send files of any type of up to 50 MB in size.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     document: File to send (pass a file_id or URL)
+    ///     caption: Document caption (optional, 0-1024 characters)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendDocument(bot: *Bot, chat_id: i64, document: []const u8, caption: ?[]const u8) !Message {
+        if (document.len == 0) return BotError.TelegramAPIError;
+
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
@@ -1659,6 +2317,8 @@ pub const methods = struct {
         defer api_response.deinit();
 
         if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
             return BotError.TelegramAPIError;
         }
 
@@ -1669,7 +2329,25 @@ pub const methods = struct {
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
+    /// Send video file
+    ///
+    /// Use this method to send video files, Telegram clients support mp4 videos.
+    /// On success, the sent Message is returned.
+    ///
+    /// Args:
+    ///     bot: Bot instance to use for the request
+    ///     chat_id: Unique identifier for the target chat
+    ///     video: Video to send (pass a file_id or URL)
+    ///     caption: Video caption (optional, 0-1024 characters)
+    ///     duration: Duration of sent video in seconds (optional)
+    ///     width: Video width (optional)
+    ///     height: Video height (optional)
+    ///
+    /// Returns:
+    ///     Sent Message object or error if the request failed
     pub fn sendVideo(bot: *Bot, chat_id: i64, video: []const u8, caption: ?[]const u8, duration: ?i32, width: ?i32, height: ?i32) !Message {
+        if (video.len == 0) return BotError.TelegramAPIError;
+
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
@@ -1708,6 +2386,8 @@ pub const methods = struct {
         defer api_response.deinit();
 
         if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
             return BotError.TelegramAPIError;
         }
 
@@ -2013,6 +2693,28 @@ pub const methods = struct {
     }
 };
 
+/// Parse a JSON value into an Update struct
+///
+/// This function converts a JSON value received from the Telegram Bot API
+/// into a properly typed Update struct. It handles all update types and
+/// properly allocates memory for nested structures.
+///
+/// Args:
+///     allocator: Memory allocator for creating the Update and its nested structures
+///     value: JSON value containing the update data
+///
+/// Returns:
+///     Parsed Update struct or error if parsing fails
+///
+/// Note: The caller is responsible for calling deinit() on the returned Update
+/// to free all allocated memory.
+///
+/// Example:
+/// ```zig
+/// // Usually called internally by getUpdates(), but can be used directly:
+/// const update = try parseUpdate(allocator, json_value);
+/// defer update.deinit(allocator);
+/// ```
 pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
     if (value != .object) return BotError.JSONError;
     const obj = value.object;
