@@ -102,7 +102,7 @@ This directory contains comprehensive examples demonstrating all the features of
 - **Verify all endpoints** are working
 
 ### 5. Advanced Bot (`advanced_bot.zig`)
-**Purpose**: Full-featured bot with state management and statistics
+**Purpose**: Full-featured bot with state management, statistics, and inline keyboards
 **Demonstrates**: All library features in a production-ready bot
 
 ```bash
@@ -115,20 +115,48 @@ This directory contains comprehensive examples demonstrating all the features of
 
 **Advanced Features**:
 - **User state management**: Track conversation flows per user
-- **Statistics tracking**: Messages, users, uptime, response rates
+- **Statistics tracking**: Messages, users, callback queries, uptime, response rates
 - **Interactive modes**: Echo mode with state persistence
+- **Inline keyboard support**: Multiple keyboard types with callback handling
 - **Message analysis**: Word count, URL detection, mentions, hashtags
 - **Comprehensive commands**:
   - `/start` - Welcome with feature overview
   - `/help` - Detailed command reference
   - `/echo` - Interactive echo mode
+  - `/keyboard` - **NEW**: Inline keyboard demo menu
+  - `/confirm` - **NEW**: Confirmation dialog with buttons
+  - `/counter` - **NEW**: Interactive counter with +/- buttons
   - `/info` - User and chat information
-  - `/stats` - Detailed bot statistics
+  - `/stats` - Detailed bot statistics (includes callback data)
   - `/ping` - Responsiveness test
   - `/time` - Current timestamp
   - `/cancel` - Cancel current action
+- **Inline Keyboard Types**:
+  - **Simple keyboards**: Yes/No choices
+  - **Complex keyboards**: Multi-row button grids
+  - **URL keyboards**: Buttons that open external links
+  - **Settings menus**: Hierarchical navigation
+  - **Confirmation dialogs**: Action confirmation workflows
+  - **Interactive counters**: Dynamic content updates
+- **Callback Query Handling**: Full support for button press responses
 - **Error recovery**: Robust error handling with automatic retries
 - **Memory management**: Proper cleanup and leak prevention
+
+**Inline Keyboard Demo Features**:
+```bash
+# After starting the bot, try these commands:
+/keyboard     # Shows main keyboard demo menu
+/confirm      # Displays confirmation dialog
+/counter      # Interactive counter (click +/- buttons)
+```
+
+The bot demonstrates:
+- Creating multi-row inline keyboards
+- Handling callback queries from button presses
+- Mixing callback buttons with URL buttons
+- Dynamic keyboard updates (like the counter)
+- Proper memory management for keyboard structures
+- State transitions based on button interactions
 
 ### 6. Echo Bot (`echo_bot.zig`)
 **Purpose**: Simple echo bot (original example)
@@ -210,8 +238,10 @@ All examples show proper Zig memory management:
 
 ### API Methods Coverage
 - `getMe()` - Bot information
-- `getUpdates()` - Message polling
+- `getUpdates()` - Message polling (includes callback queries)
 - `sendMessage()` - Sending messages
+- `sendMessageWithKeyboard()` - **NEW**: Sending messages with inline keyboards
+- `answerCallbackQuery()` - **NEW**: Responding to button presses
 - `deleteWebhook()` - Webhook management
 
 ### Real-world Patterns

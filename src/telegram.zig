@@ -199,6 +199,63 @@ pub const Chat = struct {
     }
 };
 
+// Inline keyboard support
+pub const InlineKeyboardButton = struct {
+    text: []const u8,
+    url: ?[]const u8 = null,
+    callback_data: ?[]const u8 = null,
+    switch_inline_query: ?[]const u8 = null,
+    switch_inline_query_current_chat: ?[]const u8 = null,
+
+    pub fn deinit(self: *InlineKeyboardButton, allocator: Allocator) void {
+        allocator.free(self.text);
+        if (self.url) |url| allocator.free(url);
+        if (self.callback_data) |data| allocator.free(data);
+        if (self.switch_inline_query) |query| allocator.free(query);
+        if (self.switch_inline_query_current_chat) |query| allocator.free(query);
+    }
+};
+
+pub const InlineKeyboardMarkup = struct {
+    inline_keyboard: [][]InlineKeyboardButton,
+
+    pub fn deinit(self: *InlineKeyboardMarkup, allocator: Allocator) void {
+        for (self.inline_keyboard) |row| {
+            for (row) |*button| {
+                button.deinit(allocator);
+            }
+            allocator.free(row);
+        }
+        allocator.free(self.inline_keyboard);
+    }
+};
+
+pub const CallbackQuery = struct {
+    id: []const u8,
+    from: *const User,
+    message: ?*const Message = null,
+    inline_message_id: ?[]const u8 = null,
+    chat_instance: []const u8,
+    data: ?[]const u8 = null,
+    game_short_name: ?[]const u8 = null,
+
+    pub fn deinit(self: *CallbackQuery, allocator: Allocator) void {
+        allocator.free(self.id);
+        var mutable_user = @constCast(self.from);
+        mutable_user.deinit(allocator);
+        allocator.destroy(mutable_user);
+        if (self.message) |message| {
+            var mutable_message = @constCast(message);
+            mutable_message.deinit(allocator);
+            allocator.destroy(mutable_message);
+        }
+        if (self.inline_message_id) |id| allocator.free(id);
+        allocator.free(self.chat_instance);
+        if (self.data) |data| allocator.free(data);
+        if (self.game_short_name) |name| allocator.free(name);
+    }
+};
+
 pub const Update = struct {
     update_id: i32,
     message: ?Message = null,
@@ -213,7 +270,7 @@ pub const Update = struct {
     message_reaction_count: ?std.json.Value = null,
     inline_query: ?std.json.Value = null,
     chosen_inline_result: ?std.json.Value = null,
-    callback_query: ?std.json.Value = null,
+    callback_query: ?CallbackQuery = null,
     shipping_query: ?std.json.Value = null,
     pre_checkout_query: ?std.json.Value = null,
     purchased_paid_media: ?std.json.Value = null,
@@ -232,6 +289,7 @@ pub const Update = struct {
         if (self.edited_channel_post) |*msg| msg.deinit(allocator);
         if (self.business_message) |*msg| msg.deinit(allocator);
         if (self.edited_business_message) |*msg| msg.deinit(allocator);
+        if (self.callback_query) |*query| query.deinit(allocator);
         // Note: std.json.Value fields will be cleaned up automatically by the parsed response deinit
     }
 };
@@ -433,6 +491,147 @@ pub const methods = struct {
 
         return result;
     }
+
+    pub fn sendMessageWithKeyboard(bot: *Bot, chat_id: i64, text: []const u8, keyboard: InlineKeyboardMarkup) !Message {
+        if (text.len == 0) return BotError.TelegramAPIError;
+
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        // Serialize the inline keyboard to JSON
+        var keyboard_json = std.ArrayList(u8).init(bot.allocator);
+        defer keyboard_json.deinit();
+
+        try keyboard_json.append('{');
+        try keyboard_json.appendSlice("\"inline_keyboard\":[");
+
+        for (keyboard.inline_keyboard, 0..) |row, row_idx| {
+            if (row_idx > 0) try keyboard_json.append(',');
+            try keyboard_json.append('[');
+
+            for (row, 0..) |button, btn_idx| {
+                if (btn_idx > 0) try keyboard_json.append(',');
+                try keyboard_json.append('{');
+                try keyboard_json.writer().print("\"text\":\"{s}\"", .{button.text});
+
+                if (button.callback_data) |data| {
+                    try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{data});
+                } else if (button.url) |url| {
+                    try keyboard_json.writer().print(",\"url\":\"{s}\"", .{url});
+                } else if (button.switch_inline_query) |query| {
+                    try keyboard_json.writer().print(",\"switch_inline_query\":\"{s}\"", .{query});
+                } else if (button.switch_inline_query_current_chat) |query| {
+                    try keyboard_json.writer().print(",\"switch_inline_query_current_chat\":\"{s}\"", .{query});
+                }
+
+                try keyboard_json.append('}');
+            }
+
+            try keyboard_json.append(']');
+        }
+
+        try keyboard_json.append(']');
+        try keyboard_json.append('}');
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("text", text);
+        try params.put("reply_markup", keyboard_json.items);
+
+        const response = try bot.makeRequest("sendMessage", params);
+        defer bot.allocator.free(response);
+
+        // Debug: print the raw JSON response
+        std.debug.print("sendMessageWithKeyboard JSON response: {s}\n", .{response});
+
+        // First check if the API call was successful
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
+            return BotError.TelegramAPIError;
+        }
+
+        // Parse response JSON into std.json.Value first
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        // Extract message data from JSON value
+        const message_obj = parsed.value.result.object;
+
+        var result: Message = undefined;
+        result.message_id = @intCast(message_obj.get("message_id").?.integer);
+        result.date = @intCast(message_obj.get("date").?.integer);
+
+        // Handle from field
+        if (message_obj.get("from")) |from_val| {
+            const utils = @import("utils.zig");
+            result.from = try utils.parseUser(bot.allocator, from_val);
+        } else {
+            result.from = null;
+        }
+
+        // Handle chat field
+        if (message_obj.get("chat")) |chat_val| {
+            const utils = @import("utils.zig");
+            result.chat = try utils.parseChat(bot.allocator, chat_val);
+        } else {
+            return BotError.JSONError; // Chat is required
+        }
+
+        // Handle text field
+        if (message_obj.get("text")) |text_val| {
+            result.text = try bot.allocator.dupe(u8, text_val.string);
+        } else {
+            result.text = null;
+        }
+
+        // Handle entities field
+        if (message_obj.get("entities")) |entities_val| {
+            const utils = @import("utils.zig");
+            result.entities = try utils.parseMessageEntities(bot.allocator, entities_val);
+        } else {
+            result.entities = null;
+        }
+
+        return result;
+    }
+
+    pub fn answerCallbackQuery(bot: *Bot, callback_query_id: []const u8, text: ?[]const u8, show_alert: bool) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        try params.put("callback_query_id", callback_query_id);
+
+        if (text) |txt| {
+            try params.put("text", txt);
+        }
+
+        const show_alert_str = if (show_alert) "true" else "false";
+        try params.put("show_alert", show_alert_str);
+
+        const response = try bot.makeRequest("answerCallbackQuery", params);
+        defer bot.allocator.free(response);
+
+        // Debug: print the raw JSON response
+        std.debug.print("answerCallbackQuery JSON response: {s}\n", .{response});
+
+        // First check if the API call was successful
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            const error_msg = api_response.value.description orelse "Unknown API error";
+            std.debug.print("API Error: {s}\n", .{error_msg});
+            return BotError.TelegramAPIError;
+        }
+
+        return true;
+    }
 };
 
 pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
@@ -460,7 +659,7 @@ pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
         .message_reaction_count = if (obj.get("message_reaction_count")) |val| val else null,
         .inline_query = if (obj.get("inline_query")) |val| val else null,
         .chosen_inline_result = if (obj.get("chosen_inline_result")) |val| val else null,
-        .callback_query = if (obj.get("callback_query")) |val| val else null,
+        .callback_query = if (obj.get("callback_query")) |val| try utils.parseCallbackQuery(allocator, val) else null,
         .shipping_query = if (obj.get("shipping_query")) |val| val else null,
         .pre_checkout_query = if (obj.get("pre_checkout_query")) |val| val else null,
         .purchased_paid_media = if (obj.get("purchased_paid_media")) |val| val else null,

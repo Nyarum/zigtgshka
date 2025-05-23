@@ -132,6 +132,31 @@ pub fn parseMessage(allocator: Allocator, value: std.json.Value) !telegram.Messa
     };
 }
 
+pub fn parseCallbackQuery(allocator: Allocator, value: std.json.Value) !telegram.CallbackQuery {
+    if (value != .object) return telegram.BotError.JSONError;
+    const obj = value.object;
+
+    std.debug.print("Parsing CallbackQuery with fields: {any}\n", .{obj.keys()});
+    for (obj.keys()) |key| {
+        const val = obj.get(key).?;
+        std.debug.print("Field {s}: {any}\n", .{ key, val });
+    }
+
+    return telegram.CallbackQuery{
+        .id = if (obj.get("id")) |id| try allocator.dupe(u8, id.string) else return telegram.BotError.JSONError,
+        .from = if (obj.get("from")) |from| try parseUser(allocator, from) else return telegram.BotError.JSONError,
+        .message = if (obj.get("message")) |msg| blk: {
+            const message_ptr = try allocator.create(telegram.Message);
+            message_ptr.* = try parseMessage(allocator, msg);
+            break :blk message_ptr;
+        } else null,
+        .inline_message_id = if (obj.get("inline_message_id")) |id| try allocator.dupe(u8, id.string) else null,
+        .chat_instance = if (obj.get("chat_instance")) |inst| try allocator.dupe(u8, inst.string) else return telegram.BotError.JSONError,
+        .data = if (obj.get("data")) |data| try allocator.dupe(u8, data.string) else null,
+        .game_short_name = if (obj.get("game_short_name")) |name| try allocator.dupe(u8, name.string) else null,
+    };
+}
+
 pub fn parseFile(allocator: Allocator, value: std.json.Value) !telegram.files.File {
     if (value != .Object) return telegram.BotError.JSONError;
     const obj = value.Object;
@@ -168,7 +193,7 @@ pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !telegram.Update
         .message_reaction_count = if (obj.get("message_reaction_count")) |val| val else null,
         .inline_query = if (obj.get("inline_query")) |val| val else null,
         .chosen_inline_result = if (obj.get("chosen_inline_result")) |val| val else null,
-        .callback_query = if (obj.get("callback_query")) |val| val else null,
+        .callback_query = if (obj.get("callback_query")) |val| try parseCallbackQuery(allocator, val) else null,
         .shipping_query = if (obj.get("shipping_query")) |val| val else null,
         .pre_checkout_query = if (obj.get("pre_checkout_query")) |val| val else null,
         .purchased_paid_media = if (obj.get("purchased_paid_media")) |val| val else null,

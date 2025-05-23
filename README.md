@@ -50,7 +50,7 @@
 **Option 1: Using Zig Package Manager (Recommended)**
 ```bash
 # Add to your build.zig.zon
-zig fetch --save https://github.com/yourusername/zigtgshka.git
+zig fetch --save https://github.com/Nyarum/zigtgshka.git
 
 # Then update your build.zig to add the dependency:
 # const telegram_dep = b.dependency("zigtgshka", .{});
@@ -60,7 +60,7 @@ zig fetch --save https://github.com/yourusername/zigtgshka.git
 
 **Option 2: Git Submodule**
 ```bash
-git submodule add https://github.com/yourusername/zigtgshka.git libs/telegram
+git submodule add https://github.com/Nyarum/zigtgshka.git libs/telegram
 
 # In your build.zig:
 # const telegram_mod = b.addModule("telegram", .{
@@ -71,7 +71,7 @@ git submodule add https://github.com/yourusername/zigtgshka.git libs/telegram
 
 **Option 3: Direct Download**
 ```bash
-git clone https://github.com/yourusername/zigtgshka.git
+git clone https://github.com/Nyarum/zigtgshka.git
 cd zigtgshka
 ```
 
@@ -417,7 +417,7 @@ We welcome contributions! Here's how to get started:
 ### 🔧 Development Setup
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/zigtgshka.git
+git clone https://github.com/Nyarum/zigtgshka.git
 cd zigtgshka
 
 # Run tests to verify setup
