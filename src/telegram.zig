@@ -105,6 +105,7 @@ const std = @import("std");
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
+const json_utils = @import("json.zig");
 
 /// Error types that can occur during Bot API operations
 pub const BotError = error{
@@ -235,41 +236,6 @@ pub const Bot = struct {
         self.api_endpoint = endpoint;
     }
 
-    /// Escape special characters in JSON strings
-    ///
-    /// Properly escapes quotes, backslashes, and control characters
-    /// according to JSON specification.
-    ///
-    /// Args:
-    ///     input: String to escape
-    ///
-    /// Returns:
-    ///     Escaped string (caller owns memory) or error
-    fn escapeJsonString(self: *Bot, input: []const u8) ![]const u8 {
-        // Handle empty input safely
-        if (input.len == 0) {
-            return try self.allocator.dupe(u8, "");
-        }
-
-        var result = std.ArrayList(u8).init(self.allocator);
-        // Remove defer - we'll transfer ownership with toOwnedSlice()
-
-        for (input) |char| {
-            switch (char) {
-                '"' => try result.appendSlice("\\\""),
-                '\\' => try result.appendSlice("\\\\"),
-                '\n' => try result.appendSlice("\\n"),
-                '\r' => try result.appendSlice("\\r"),
-                '\t' => try result.appendSlice("\\t"),
-                '\x08' => try result.appendSlice("\\b"), // backspace
-                '\x0C' => try result.appendSlice("\\f"), // form feed
-                else => try result.append(char),
-            }
-        }
-
-        return result.toOwnedSlice();
-    }
-
     /// Make an HTTP request to the Telegram Bot API
     ///
     /// This is the core method that handles all API communication.
@@ -300,39 +266,20 @@ pub const Bot = struct {
         });
         defer req.deinit();
 
-        // Convert params to JSON
-        var json_str = std.ArrayList(u8).init(self.allocator);
-        defer json_str.deinit();
+        // Convert params HashMap to a struct-like representation and then to JSON
+        // Use the json_utils library for clean JSON marshaling
+        const json_str = if (params.count() > 0)
+            try json_utils.marshalStringHashMap(self.allocator, params)
+        else
+            try self.allocator.dupe(u8, "{}");
+        defer self.allocator.free(json_str);
 
-        try json_str.append('{');
-        var first = true;
-        var it = params.iterator();
-        while (it.next()) |entry| {
-            if (!first) try json_str.append(',');
+        std.debug.print("Request JSON: {s}\n", .{json_str});
 
-            // Safety checks before escaping
-            const key = entry.key_ptr.*;
-            const value = entry.value_ptr.*;
-
-            // Skip null or invalid entries
-            if (key.len == 0) continue;
-
-            // Properly escape both key and value
-            const escaped_key = try self.escapeJsonString(key);
-            defer self.allocator.free(escaped_key);
-            const escaped_value = try self.escapeJsonString(value);
-            defer self.allocator.free(escaped_value);
-            try json_str.writer().print("\"{s}\":\"{s}\"", .{ escaped_key, escaped_value });
-            first = false;
-        }
-        try json_str.append('}');
-
-        std.debug.print("Request JSON: {s}\n", .{json_str.items});
-
-        if (json_str.items.len > 2) { // More than just "{}"
-            req.transfer_encoding = .{ .content_length = json_str.items.len };
+        if (json_str.len > 2) { // More than just "{}"
+            req.transfer_encoding = .{ .content_length = json_str.len };
             try req.send();
-            try req.writeAll(json_str.items);
+            try req.writeAll(json_str);
         } else {
             try req.send();
         }
@@ -344,70 +291,19 @@ pub const Bot = struct {
         return body;
     }
 
-    // Helper function to create params with proper memory management using stack buffers
-    fn createParams(bot: *Bot, comptime FieldType: type, fields: FieldType) !std.StringHashMap([]const u8) {
-        var params = std.StringHashMap([]const u8).init(bot.allocator);
-        errdefer params.deinit();
-
-        // Pre-allocate stack buffers for number formatting
-        var i64_buffers: [16][32]u8 = undefined;
-        var i32_buffers: [16][16]u8 = undefined;
-        var f64_buffers: [16][64]u8 = undefined;
-        var i64_count: usize = 0;
-        var i32_count: usize = 0;
-        var f64_count: usize = 0;
-
-        inline for (@typeInfo(FieldType).Struct.fields) |field| {
-            const value = @field(fields, field.name);
-            const T = @TypeOf(value);
-
-            if (T == i64) {
-                if (i64_count >= i64_buffers.len) @panic("Too many i64 fields in createParams");
-                const str = Bot.formatI64(value, &i64_buffers[i64_count]);
-                i64_count += 1;
-                try params.put(field.name, str);
-            } else if (T == i32) {
-                if (i32_count >= i32_buffers.len) @panic("Too many i32 fields in createParams");
-                const str = Bot.formatI32(value, &i32_buffers[i32_count]);
-                i32_count += 1;
-                try params.put(field.name, str);
-            } else if (T == f64) {
-                if (f64_count >= f64_buffers.len) @panic("Too many f64 fields in createParams");
-                const str = Bot.formatF64(value, &f64_buffers[f64_count]);
-                f64_count += 1;
-                try params.put(field.name, str);
-            } else if (T == []const u8) {
-                try params.put(field.name, value);
-            } else if (@typeInfo(T) == .Optional) {
-                if (value) |v| {
-                    const InnerT = @TypeOf(v);
-                    if (InnerT == i64) {
-                        if (i64_count >= i64_buffers.len) @panic("Too many i64 fields in createParams");
-                        const str = Bot.formatI64(v, &i64_buffers[i64_count]);
-                        i64_count += 1;
-                        try params.put(field.name, str);
-                    } else if (InnerT == i32) {
-                        if (i32_count >= i32_buffers.len) @panic("Too many i32 fields in createParams");
-                        const str = Bot.formatI32(v, &i32_buffers[i32_count]);
-                        i32_count += 1;
-                        try params.put(field.name, str);
-                    } else if (InnerT == f64) {
-                        if (f64_count >= f64_buffers.len) @panic("Too many f64 fields in createParams");
-                        const str = Bot.formatF64(v, &f64_buffers[f64_count]);
-                        f64_count += 1;
-                        try params.put(field.name, str);
-                    } else if (InnerT == []const u8) {
-                        try params.put(field.name, v);
-                    }
-                }
-            }
-        }
-
-        return params;
+    /// Create parameters using the new json_utils module
+    /// This is much cleaner and more maintainable than the old manual approach
+    fn createParams(bot: *Bot, value: anytype) !std.StringHashMap([]const u8) {
+        return json_utils.createParams(bot.allocator, value);
     }
 
-    // Helper function to cleanup params - now only needs to deinit the hashmap since no heap allocations
-    fn cleanupParams(params: *std.StringHashMap([]const u8)) void {
+    /// Clean up parameters created with createParams
+    fn cleanupParams(bot: *Bot, params: *std.StringHashMap([]const u8), original_value: anytype) void {
+        json_utils.cleanupParamsWithValue(bot.allocator, params, original_value);
+    }
+
+    /// Simple cleanup for basic parameter maps
+    fn cleanupParamsSimple(params: *std.StringHashMap([]const u8)) void {
         params.deinit();
     }
 };
@@ -1066,15 +962,19 @@ pub const methods = struct {
     pub fn sendMessage(bot: *Bot, chat_id: i64, text: []const u8) !Message {
         if (text.len == 0) return BotError.TelegramAPIError;
 
-        var params = std.StringHashMap([]const u8).init(bot.allocator);
-        defer params.deinit();
+        // Create parameters using struct approach
+        const MessageParams = struct {
+            chat_id: i64,
+            text: []const u8,
+        };
 
-        // Use stack buffer for chat_id formatting - i64 max is 20 chars including sign
-        var chat_id_buffer: [32]u8 = undefined;
-        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const params_struct = MessageParams{
+            .chat_id = chat_id,
+            .text = text,
+        };
 
-        try params.put("chat_id", chat_id_str);
-        try params.put("text", text);
+        var params = try bot.createParams(params_struct);
+        defer bot.cleanupParams(&params, params_struct);
 
         const response = try bot.makeRequest("sendMessage", params);
         defer bot.allocator.free(response);
@@ -1167,70 +1067,24 @@ pub const methods = struct {
     pub fn sendMessageWithKeyboard(bot: *Bot, chat_id: i64, text: []const u8, keyboard: InlineKeyboardMarkup) !Message {
         if (text.len == 0) return BotError.TelegramAPIError;
 
-        var params = std.StringHashMap([]const u8).init(bot.allocator);
-        defer params.deinit();
+        // Create parameters using struct approach
+        const MessageParams = struct {
+            chat_id: i64,
+            text: []const u8,
+        };
 
-        // Use stack buffer for chat_id formatting - i64 max is 20 chars including sign
-        var chat_id_buffer: [32]u8 = undefined;
-        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const params_struct = MessageParams{
+            .chat_id = chat_id,
+            .text = text,
+        };
 
-        // Create a temporary arena allocator for JSON serialization
-        var arena = std.heap.ArenaAllocator.init(bot.allocator);
-        defer arena.deinit();
-        const arena_allocator = arena.allocator();
+        var params = try bot.createParams(params_struct);
+        defer bot.cleanupParams(&params, params_struct);
 
-        // Create the reply_markup JSON string manually to avoid null fields
-        var keyboard_json = std.ArrayList(u8).init(arena_allocator);
-        defer keyboard_json.deinit();
-
-        try keyboard_json.appendSlice("{\"inline_keyboard\":[");
-
-        for (keyboard.inline_keyboard, 0..) |row, row_index| {
-            if (row_index > 0) try keyboard_json.append(',');
-            try keyboard_json.append('[');
-
-            for (row, 0..) |button, button_index| {
-                if (button_index > 0) try keyboard_json.append(',');
-                try keyboard_json.append('{');
-
-                // Always include text field - properly escaped
-                const escaped_text = try bot.escapeJsonString(button.text);
-                defer bot.allocator.free(escaped_text);
-                try keyboard_json.writer().print("\"text\":\"{s}\"", .{escaped_text});
-
-                // Only include fields that are not null - properly escaped
-                if (button.url) |url| {
-                    const escaped_url = try bot.escapeJsonString(url);
-                    defer bot.allocator.free(escaped_url);
-                    try keyboard_json.writer().print(",\"url\":\"{s}\"", .{escaped_url});
-                }
-                if (button.callback_data) |data| {
-                    const escaped_data = try bot.escapeJsonString(data);
-                    defer bot.allocator.free(escaped_data);
-                    try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{escaped_data});
-                }
-                if (button.switch_inline_query) |query| {
-                    const escaped_query = try bot.escapeJsonString(query);
-                    defer bot.allocator.free(escaped_query);
-                    try keyboard_json.writer().print(",\"switch_inline_query\":\"{s}\"", .{escaped_query});
-                }
-                if (button.switch_inline_query_current_chat) |query| {
-                    const escaped_query = try bot.escapeJsonString(query);
-                    defer bot.allocator.free(escaped_query);
-                    try keyboard_json.writer().print(",\"switch_inline_query_current_chat\":\"{s}\"", .{escaped_query});
-                }
-
-                try keyboard_json.append('}');
-            }
-
-            try keyboard_json.append(']');
-        }
-
-        try keyboard_json.appendSlice("]}");
-
-        try params.put("chat_id", chat_id_str);
-        try params.put("text", text);
-        try params.put("reply_markup", keyboard_json.items);
+        // Use the json_utils library to marshal the keyboard
+        const keyboard_json = try json_utils.marshal(bot.allocator, keyboard);
+        defer bot.allocator.free(keyboard_json);
+        try params.put("reply_markup", keyboard_json);
 
         const response = try bot.makeRequest("sendMessage", params);
         defer bot.allocator.free(response);
@@ -1523,38 +1377,10 @@ pub const methods = struct {
         try params.put("message_id", message_id_str);
 
         if (keyboard) |kb| {
-            var arena = std.heap.ArenaAllocator.init(bot.allocator);
-            defer arena.deinit();
-            const arena_allocator = arena.allocator();
-
-            var keyboard_json = std.ArrayList(u8).init(arena_allocator);
-            defer keyboard_json.deinit();
-
-            try keyboard_json.appendSlice("{\"inline_keyboard\":[");
-            for (kb.inline_keyboard, 0..) |row, row_index| {
-                if (row_index > 0) try keyboard_json.append(',');
-                try keyboard_json.append('[');
-                for (row, 0..) |button, button_index| {
-                    if (button_index > 0) try keyboard_json.append(',');
-                    try keyboard_json.append('{');
-
-                    const escaped_text = try bot.escapeJsonString(button.text);
-                    defer bot.allocator.free(escaped_text);
-                    try keyboard_json.writer().print("\"text\":\"{s}\"", .{escaped_text});
-
-                    if (button.callback_data) |data| {
-                        const escaped_data = try bot.escapeJsonString(data);
-                        defer bot.allocator.free(escaped_data);
-                        try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{escaped_data});
-                    }
-
-                    try keyboard_json.append('}');
-                }
-                try keyboard_json.append(']');
-            }
-            try keyboard_json.appendSlice("]}");
-
-            try params.put("reply_markup", keyboard_json.items);
+            // Use the json_utils library to marshal the keyboard
+            const keyboard_json = try json_utils.marshal(bot.allocator, kb);
+            defer bot.allocator.free(keyboard_json);
+            try params.put("reply_markup", keyboard_json);
         } else {
             try params.put("reply_markup", "{}");
         }
@@ -1776,26 +1602,13 @@ pub const methods = struct {
 
         const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
-        // Create options JSON array
-        var arena = std.heap.ArenaAllocator.init(bot.allocator);
-        defer arena.deinit();
-        const arena_allocator = arena.allocator();
-
-        var options_json = std.ArrayList(u8).init(arena_allocator);
-        defer options_json.deinit();
-
-        try options_json.append('[');
-        for (options, 0..) |option, i| {
-            if (i > 0) try options_json.append(',');
-            const escaped_option = try bot.escapeJsonString(option);
-            defer bot.allocator.free(escaped_option);
-            try options_json.writer().print("\"{s}\"", .{escaped_option});
-        }
-        try options_json.append(']');
+        // Create options JSON array using json_utils.marshal
+        const options_json = try json_utils.marshal(bot.allocator, options);
+        defer bot.allocator.free(options_json);
 
         try params.put("chat_id", chat_id_str);
         try params.put("question", question);
-        try params.put("options", options_json.items);
+        try params.put("options", options_json);
 
         const response = try bot.makeRequest("sendPoll", params);
         defer bot.allocator.free(response);
@@ -2056,26 +1869,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        // Create commands JSON array
-        var arena = std.heap.ArenaAllocator.init(bot.allocator);
-        defer arena.deinit();
-        const arena_allocator = arena.allocator();
+        // Create commands JSON array using json_utils.marshal
+        const commands_json = try json_utils.marshal(bot.allocator, commands);
+        defer bot.allocator.free(commands_json);
 
-        var commands_json = std.ArrayList(u8).init(arena_allocator);
-        defer commands_json.deinit();
-
-        try commands_json.append('[');
-        for (commands, 0..) |cmd, i| {
-            if (i > 0) try commands_json.append(',');
-            const escaped_command = try bot.escapeJsonString(cmd.command);
-            defer bot.allocator.free(escaped_command);
-            const escaped_description = try bot.escapeJsonString(cmd.description);
-            defer bot.allocator.free(escaped_description);
-            try commands_json.writer().print("{{\"command\":\"{s}\",\"description\":\"{s}\"}}", .{ escaped_command, escaped_description });
-        }
-        try commands_json.append(']');
-
-        try params.put("commands", commands_json.items);
+        try params.put("commands", commands_json);
 
         const response = try bot.makeRequest("setMyCommands", params);
         defer bot.allocator.free(response);
@@ -2789,7 +2587,6 @@ pub const methods = struct {
 
         const response = try bot.makeRequest("exportChatInviteLink", params);
         defer bot.allocator.free(response);
-
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer api_response.deinit();
 
