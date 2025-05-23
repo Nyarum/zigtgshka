@@ -60,6 +60,27 @@ pub const Bot = struct {
         self.api_endpoint = endpoint;
     }
 
+    // Helper function to escape JSON strings
+    fn escapeJsonString(self: *Bot, input: []const u8) ![]const u8 {
+        var result = std.ArrayList(u8).init(self.allocator);
+        defer result.deinit();
+
+        for (input) |char| {
+            switch (char) {
+                '"' => try result.appendSlice("\\\""),
+                '\\' => try result.appendSlice("\\\\"),
+                '\n' => try result.appendSlice("\\n"),
+                '\r' => try result.appendSlice("\\r"),
+                '\t' => try result.appendSlice("\\t"),
+                '\x08' => try result.appendSlice("\\b"), // backspace
+                '\x0C' => try result.appendSlice("\\f"), // form feed
+                else => try result.append(char),
+            }
+        }
+
+        return result.toOwnedSlice();
+    }
+
     pub fn makeRequest(self: *Bot, endpoint: []const u8, params: std.StringHashMap([]const u8)) ![]const u8 {
         const url = try std.fmt.allocPrint(
             self.allocator,
@@ -88,8 +109,12 @@ pub const Bot = struct {
         var it = params.iterator();
         while (it.next()) |entry| {
             if (!first) try json_str.append(',');
-            // Properly format key-value pairs
-            try json_str.writer().print("\"{s}\":\"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+            // Properly escape both key and value
+            const escaped_key = try self.escapeJsonString(entry.key_ptr.*);
+            defer self.allocator.free(escaped_key);
+            const escaped_value = try self.escapeJsonString(entry.value_ptr.*);
+            defer self.allocator.free(escaped_value);
+            try json_str.writer().print("\"{s}\":\"{s}\"", .{ escaped_key, escaped_value });
             first = false;
         }
         try json_str.append('}');
@@ -501,30 +526,50 @@ pub const methods = struct {
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
         defer bot.allocator.free(chat_id_str);
 
-        // Serialize the inline keyboard to JSON
-        var keyboard_json = std.ArrayList(u8).init(bot.allocator);
+        // Create a temporary arena allocator for JSON serialization
+        var arena = std.heap.ArenaAllocator.init(bot.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        // Create the reply_markup JSON string manually to avoid null fields
+        var keyboard_json = std.ArrayList(u8).init(arena_allocator);
         defer keyboard_json.deinit();
 
-        try keyboard_json.append('{');
-        try keyboard_json.appendSlice("\"inline_keyboard\":[");
+        try keyboard_json.appendSlice("{\"inline_keyboard\":[");
 
-        for (keyboard.inline_keyboard, 0..) |row, row_idx| {
-            if (row_idx > 0) try keyboard_json.append(',');
+        for (keyboard.inline_keyboard, 0..) |row, row_index| {
+            if (row_index > 0) try keyboard_json.append(',');
             try keyboard_json.append('[');
 
-            for (row, 0..) |button, btn_idx| {
-                if (btn_idx > 0) try keyboard_json.append(',');
+            for (row, 0..) |button, button_index| {
+                if (button_index > 0) try keyboard_json.append(',');
                 try keyboard_json.append('{');
-                try keyboard_json.writer().print("\"text\":\"{s}\"", .{button.text});
 
+                // Always include text field - properly escaped
+                const escaped_text = try bot.escapeJsonString(button.text);
+                defer bot.allocator.free(escaped_text);
+                try keyboard_json.writer().print("\"text\":\"{s}\"", .{escaped_text});
+
+                // Only include fields that are not null - properly escaped
+                if (button.url) |url| {
+                    const escaped_url = try bot.escapeJsonString(url);
+                    defer bot.allocator.free(escaped_url);
+                    try keyboard_json.writer().print(",\"url\":\"{s}\"", .{escaped_url});
+                }
                 if (button.callback_data) |data| {
-                    try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{data});
-                } else if (button.url) |url| {
-                    try keyboard_json.writer().print(",\"url\":\"{s}\"", .{url});
-                } else if (button.switch_inline_query) |query| {
-                    try keyboard_json.writer().print(",\"switch_inline_query\":\"{s}\"", .{query});
-                } else if (button.switch_inline_query_current_chat) |query| {
-                    try keyboard_json.writer().print(",\"switch_inline_query_current_chat\":\"{s}\"", .{query});
+                    const escaped_data = try bot.escapeJsonString(data);
+                    defer bot.allocator.free(escaped_data);
+                    try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{escaped_data});
+                }
+                if (button.switch_inline_query) |query| {
+                    const escaped_query = try bot.escapeJsonString(query);
+                    defer bot.allocator.free(escaped_query);
+                    try keyboard_json.writer().print(",\"switch_inline_query\":\"{s}\"", .{escaped_query});
+                }
+                if (button.switch_inline_query_current_chat) |query| {
+                    const escaped_query = try bot.escapeJsonString(query);
+                    defer bot.allocator.free(escaped_query);
+                    try keyboard_json.writer().print(",\"switch_inline_query_current_chat\":\"{s}\"", .{escaped_query});
                 }
 
                 try keyboard_json.append('}');
@@ -533,8 +578,7 @@ pub const methods = struct {
             try keyboard_json.append(']');
         }
 
-        try keyboard_json.append(']');
-        try keyboard_json.append('}');
+        try keyboard_json.appendSlice("]}");
 
         try params.put("chat_id", chat_id_str);
         try params.put("text", text);
