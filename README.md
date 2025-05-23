@@ -118,11 +118,13 @@ pub fn build(b: *std.Build) void {
 ```bash
 git submodule add https://github.com/Nyarum/zigtgshka.git libs/telegram
 
-# In your build.zig:
-# const telegram_mod = b.addModule("telegram", .{
-#     .root_source_file = b.path("libs/telegram/src/telegram.zig"),
-# });
-# exe.root_module.addImport("telegram", telegram_mod);
+const telegram_mod = b.addModule("telegram", .{
+    .root_source_file = b.path("libs/telegram/src/telegram.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("telegram", telegram_mod);
+exe.linkLibC(); // Required for HTTP client
 ```
 
 **Option 3: Direct Download**
@@ -188,11 +190,11 @@ pub fn main() !void {
 **Run it:**
 ```bash
 # Using zig build (recommended)
-zig build run -- YOUR_BOT_TOKEN
+zig build run
 
 # Or build and run manually
 zig build
-./zig-out/bin/my_bot YOUR_BOT_TOKEN
+./zig-out/bin/my_bot
 ```
 
 ## 📚 Examples
