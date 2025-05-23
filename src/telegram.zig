@@ -171,6 +171,25 @@ pub const Bot = struct {
     /// Memory allocator for bot operations
     allocator: Allocator,
 
+    // Helper functions for number formatting without heap allocation
+    /// Format an i64 to string using a stack buffer
+    /// Returns a slice into the provided buffer
+    fn formatI64(value: i64, buffer: []u8) []const u8 {
+        return std.fmt.bufPrint(buffer, "{d}", .{value}) catch unreachable;
+    }
+
+    /// Format an i32 to string using a stack buffer
+    /// Returns a slice into the provided buffer
+    fn formatI32(value: i32, buffer: []u8) []const u8 {
+        return std.fmt.bufPrint(buffer, "{d}", .{value}) catch unreachable;
+    }
+
+    /// Format an f64 to string using a stack buffer
+    /// Returns a slice into the provided buffer
+    fn formatF64(value: f64, buffer: []u8) []const u8 {
+        return std.fmt.bufPrint(buffer, "{d}", .{value}) catch unreachable;
+    }
+
     /// Initialize a new Bot instance
     ///
     /// Args:
@@ -324,25 +343,57 @@ pub const Bot = struct {
         return body;
     }
 
-    // Helper function to create params with proper memory management
+    // Helper function to create params with proper memory management using stack buffers
     fn createParams(bot: *Bot, comptime FieldType: type, fields: FieldType) !std.StringHashMap([]const u8) {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         errdefer params.deinit();
+
+        // Pre-allocate stack buffers for number formatting
+        var i64_buffers: [16][32]u8 = undefined;
+        var i32_buffers: [16][16]u8 = undefined;
+        var f64_buffers: [16][64]u8 = undefined;
+        var i64_count: usize = 0;
+        var i32_count: usize = 0;
+        var f64_count: usize = 0;
 
         inline for (@typeInfo(FieldType).Struct.fields) |field| {
             const value = @field(fields, field.name);
             const T = @TypeOf(value);
 
-            if (T == i64 or T == i32) {
-                const str = try std.fmt.allocPrint(bot.allocator, "{d}", .{value});
+            if (T == i64) {
+                if (i64_count >= i64_buffers.len) @panic("Too many i64 fields in createParams");
+                const str = Bot.formatI64(value, &i64_buffers[i64_count]);
+                i64_count += 1;
+                try params.put(field.name, str);
+            } else if (T == i32) {
+                if (i32_count >= i32_buffers.len) @panic("Too many i32 fields in createParams");
+                const str = Bot.formatI32(value, &i32_buffers[i32_count]);
+                i32_count += 1;
+                try params.put(field.name, str);
+            } else if (T == f64) {
+                if (f64_count >= f64_buffers.len) @panic("Too many f64 fields in createParams");
+                const str = Bot.formatF64(value, &f64_buffers[f64_count]);
+                f64_count += 1;
                 try params.put(field.name, str);
             } else if (T == []const u8) {
                 try params.put(field.name, value);
             } else if (@typeInfo(T) == .Optional) {
                 if (value) |v| {
                     const InnerT = @TypeOf(v);
-                    if (InnerT == i64 or InnerT == i32) {
-                        const str = try std.fmt.allocPrint(bot.allocator, "{d}", .{v});
+                    if (InnerT == i64) {
+                        if (i64_count >= i64_buffers.len) @panic("Too many i64 fields in createParams");
+                        const str = Bot.formatI64(v, &i64_buffers[i64_count]);
+                        i64_count += 1;
+                        try params.put(field.name, str);
+                    } else if (InnerT == i32) {
+                        if (i32_count >= i32_buffers.len) @panic("Too many i32 fields in createParams");
+                        const str = Bot.formatI32(v, &i32_buffers[i32_count]);
+                        i32_count += 1;
+                        try params.put(field.name, str);
+                    } else if (InnerT == f64) {
+                        if (f64_count >= f64_buffers.len) @panic("Too many f64 fields in createParams");
+                        const str = Bot.formatF64(v, &f64_buffers[f64_count]);
+                        f64_count += 1;
                         try params.put(field.name, str);
                     } else if (InnerT == []const u8) {
                         try params.put(field.name, v);
@@ -354,27 +405,8 @@ pub const Bot = struct {
         return params;
     }
 
-    // Helper function to cleanup allocated param strings
-    fn cleanupParams(bot: *Bot, params: *std.StringHashMap([]const u8), comptime FieldType: type, fields: FieldType) void {
-        inline for (@typeInfo(FieldType).Struct.fields) |field| {
-            const value = @field(fields, field.name);
-            const T = @TypeOf(value);
-
-            if (T == i64 or T == i32) {
-                if (params.get(field.name)) |str| {
-                    bot.allocator.free(str);
-                }
-            } else if (@typeInfo(T) == .Optional) {
-                if (value) |v| {
-                    const InnerT = @TypeOf(v);
-                    if (InnerT == i64 or InnerT == i32) {
-                        if (params.get(field.name)) |str| {
-                            bot.allocator.free(str);
-                        }
-                    }
-                }
-            }
-        }
+    // Helper function to cleanup params - now only needs to deinit the hashmap since no heap allocations
+    fn cleanupParams(params: *std.StringHashMap([]const u8)) void {
         params.deinit();
     }
 };
@@ -926,12 +958,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const offset_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{offset});
-        defer bot.allocator.free(offset_str);
-        const limit_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{limit});
-        defer bot.allocator.free(limit_str);
-        const timeout_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{timeout});
-        defer bot.allocator.free(timeout_str);
+        // Use stack buffers for number formatting - i32 max is 11 chars including sign
+        var offset_buffer: [16]u8 = undefined;
+        var limit_buffer: [16]u8 = undefined;
+        var timeout_buffer: [16]u8 = undefined;
+
+        const offset_str = Bot.formatI32(offset, &offset_buffer);
+        const limit_str = Bot.formatI32(limit, &limit_buffer);
+        const timeout_str = Bot.formatI32(timeout, &timeout_buffer);
 
         try params.put("offset", offset_str);
         try params.put("limit", limit_str);
@@ -1034,15 +1068,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        // Use stack buffer for chat_id formatting - i64 max is 20 chars including sign
+        var chat_id_buffer: [32]u8 = undefined;
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("text", text);
 
         const response = try bot.makeRequest("sendMessage", params);
-
-        // Now it's safe to free the allocated string after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
@@ -1139,7 +1172,9 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        // Use stack buffer for chat_id formatting - i64 max is 20 chars including sign
+        var chat_id_buffer: [32]u8 = undefined;
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         // Create a temporary arena allocator for JSON serialization
         var arena = std.heap.ArenaAllocator.init(bot.allocator);
@@ -1200,9 +1235,6 @@ pub const methods = struct {
         try params.put("reply_markup", keyboard_json.items);
 
         const response = try bot.makeRequest("sendMessage", params);
-
-        // Now it's safe to free the allocated string after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
@@ -1341,12 +1373,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const from_chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{from_chat_id});
-        defer bot.allocator.free(from_chat_id_str);
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
+        // Use stack buffers for number formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        var from_chat_id_buffer: [32]u8 = undefined;
+        var message_id_buffer: [16]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const from_chat_id_str = Bot.formatI64(from_chat_id, &from_chat_id_buffer);
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("from_chat_id", from_chat_id_str);
@@ -1387,12 +1421,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const from_chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{from_chat_id});
-        defer bot.allocator.free(from_chat_id_str);
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
+        // Use stack buffers for number formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        var from_chat_id_buffer: [32]u8 = undefined;
+        var message_id_buffer: [16]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const from_chat_id_str = Bot.formatI64(from_chat_id, &from_chat_id_buffer);
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("from_chat_id", from_chat_id_str);
@@ -1431,10 +1467,16 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        // Use stack buffer for message_id formatting
+
+        var message_id_buffer: [16]u8 = undefined;
+
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("message_id", message_id_str);
@@ -1473,10 +1515,16 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        // Use stack buffer for message_id formatting
+
+        var message_id_buffer: [16]u8 = undefined;
+
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("message_id", message_id_str);
@@ -1557,10 +1605,16 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        // Use stack buffer for message_id formatting
+
+        var message_id_buffer: [16]u8 = undefined;
+
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("message_id", message_id_str);
@@ -1601,8 +1655,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("action", action);
@@ -1633,12 +1690,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const latitude_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{latitude});
-        defer bot.allocator.free(latitude_str);
-        const longitude_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{longitude});
-        defer bot.allocator.free(longitude_str);
+        // Use stack buffers for number formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        var latitude_buffer: [64]u8 = undefined;
+        var longitude_buffer: [64]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const latitude_str = Bot.formatF64(latitude, &latitude_buffer);
+        const longitude_str = Bot.formatF64(longitude, &longitude_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("latitude", latitude_str);
@@ -1677,8 +1736,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("phone_number", phone_number);
@@ -1718,8 +1780,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         // Create options JSON array
         var arena = std.heap.ArenaAllocator.init(bot.allocator);
@@ -1767,8 +1832,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
@@ -1795,8 +1863,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
@@ -1820,8 +1891,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
@@ -1839,10 +1913,16 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
-        defer bot.allocator.free(user_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        // Use stack buffer for user_id formatting
+
+        var user_id_buffer: [32]u8 = undefined;
+
+        const user_id_str = Bot.formatI64(user_id, &user_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("user_id", user_id_str);
@@ -1860,10 +1940,16 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
-        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
-        defer bot.allocator.free(user_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        // Use stack buffer for user_id formatting
+
+        var user_id_buffer: [32]u8 = undefined;
+
+        const user_id_str = Bot.formatI64(user_id, &user_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("user_id", user_id_str);
@@ -1882,17 +1968,17 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        // Use stack buffers for number formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        var message_id_buffer: [16]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
+        const message_id_str = Bot.formatI32(message_id, &message_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("message_id", message_id_str);
 
         const response = try bot.makeRequest("pinChatMessage", params);
-
-        // Now it's safe to free the strings after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
-        defer bot.allocator.free(message_id_str);
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
@@ -1905,23 +1991,21 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        // Use stack buffer for chat_id formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
         var message_id_str: ?[]const u8 = null;
         if (message_id) |msg_id| {
-            message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{msg_id});
+            var message_id_buffer: [16]u8 = undefined;
+            message_id_str = Bot.formatI32(msg_id, &message_id_buffer);
             try params.put("message_id", message_id_str.?);
         }
 
         const response = try bot.makeRequest("unpinChatMessage", params);
 
-        // Now it's safe to free the strings after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
-        if (message_id_str) |str| {
-            defer bot.allocator.free(str);
-        }
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
@@ -1934,14 +2018,14 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        // Use stack buffer for chat_id formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
         const response = try bot.makeRequest("unpinAllChatMessages", params);
 
-        // Now it's safe to free the string after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
@@ -2063,8 +2147,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         if (emoji) |e| {
@@ -2136,20 +2223,29 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
-        defer bot.allocator.free(user_id_str);
+        // Use stack buffer for user_id formatting
+
+        var user_id_buffer: [32]u8 = undefined;
+
+        const user_id_str = Bot.formatI64(user_id, &user_id_buffer);
 
         try params.put("user_id", user_id_str);
 
         if (offset) |o| {
-            const offset_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{o});
-            defer bot.allocator.free(offset_str);
+            // Use stack buffer for o formatting
+
+            var offset_buffer: [16]u8 = undefined;
+
+            const offset_str = Bot.formatI32(o, &offset_buffer);
             try params.put("offset", offset_str);
         }
 
         if (limit) |l| {
-            const limit_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{l});
-            defer bot.allocator.free(limit_str);
+            // Use stack buffer for l formatting
+
+            var limit_buffer: [16]u8 = undefined;
+
+            const limit_str = Bot.formatI32(l, &limit_buffer);
             try params.put("limit", limit_str);
         }
 
@@ -2189,7 +2285,9 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        // Use stack buffer for chat_id formatting
+        var chat_id_buffer: [32]u8 = undefined;
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("photo", photo);
@@ -2200,8 +2298,6 @@ pub const methods = struct {
 
         const response = try bot.makeRequest("sendPhoto", params);
 
-        // Now it's safe to free the allocated string after makeRequest is done
-        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
@@ -2246,8 +2342,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("audio", audio);
@@ -2257,8 +2356,11 @@ pub const methods = struct {
         }
 
         if (duration) |dur| {
-            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
-            defer bot.allocator.free(duration_str);
+            // Use stack buffer for dur formatting
+
+            var duration_buffer: [16]u8 = undefined;
+
+            const duration_str = Bot.formatI32(dur, &duration_buffer);
             try params.put("duration", duration_str);
         }
 
@@ -2300,8 +2402,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("document", document);
@@ -2351,8 +2456,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("video", video);
@@ -2362,20 +2470,29 @@ pub const methods = struct {
         }
 
         if (duration) |dur| {
-            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
-            defer bot.allocator.free(duration_str);
+            // Use stack buffer for dur formatting
+
+            var duration_buffer: [16]u8 = undefined;
+
+            const duration_str = Bot.formatI32(dur, &duration_buffer);
             try params.put("duration", duration_str);
         }
 
         if (width) |w| {
-            const width_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{w});
-            defer bot.allocator.free(width_str);
+            // Use stack buffer for w formatting
+
+            var width_buffer: [16]u8 = undefined;
+
+            const width_str = Bot.formatI32(w, &width_buffer);
             try params.put("width", width_str);
         }
 
         if (height) |h| {
-            const height_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{h});
-            defer bot.allocator.free(height_str);
+            // Use stack buffer for h formatting
+
+            var height_buffer: [16]u8 = undefined;
+
+            const height_str = Bot.formatI32(h, &height_buffer);
             try params.put("height", height_str);
         }
 
@@ -2402,8 +2519,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("animation", animation);
@@ -2413,20 +2533,29 @@ pub const methods = struct {
         }
 
         if (duration) |dur| {
-            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
-            defer bot.allocator.free(duration_str);
+            // Use stack buffer for dur formatting
+
+            var duration_buffer: [16]u8 = undefined;
+
+            const duration_str = Bot.formatI32(dur, &duration_buffer);
             try params.put("duration", duration_str);
         }
 
         if (width) |w| {
-            const width_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{w});
-            defer bot.allocator.free(width_str);
+            // Use stack buffer for w formatting
+
+            var width_buffer: [16]u8 = undefined;
+
+            const width_str = Bot.formatI32(w, &width_buffer);
             try params.put("width", width_str);
         }
 
         if (height) |h| {
-            const height_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{h});
-            defer bot.allocator.free(height_str);
+            // Use stack buffer for h formatting
+
+            var height_buffer: [16]u8 = undefined;
+
+            const height_str = Bot.formatI32(h, &height_buffer);
             try params.put("height", height_str);
         }
 
@@ -2451,8 +2580,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("voice", voice);
@@ -2462,8 +2594,11 @@ pub const methods = struct {
         }
 
         if (duration) |dur| {
-            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
-            defer bot.allocator.free(duration_str);
+            // Use stack buffer for dur formatting
+
+            var duration_buffer: [16]u8 = undefined;
+
+            const duration_str = Bot.formatI32(dur, &duration_buffer);
             try params.put("duration", duration_str);
         }
 
@@ -2488,21 +2623,30 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("video_note", video_note);
 
         if (duration) |dur| {
-            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
-            defer bot.allocator.free(duration_str);
+            // Use stack buffer for dur formatting
+
+            var duration_buffer: [16]u8 = undefined;
+
+            const duration_str = Bot.formatI32(dur, &duration_buffer);
             try params.put("duration", duration_str);
         }
 
         if (length) |len| {
-            const length_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{len});
-            defer bot.allocator.free(length_str);
+            // Use stack buffer for len formatting
+
+            var length_buffer: [16]u8 = undefined;
+
+            const length_str = Bot.formatI32(len, &length_buffer);
             try params.put("length", length_str);
         }
 
@@ -2527,8 +2671,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("sticker", sticker);
@@ -2578,8 +2725,11 @@ pub const methods = struct {
         try params.put("results", results_json.items);
 
         if (cache_time) |ct| {
-            const cache_time_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{ct});
-            defer bot.allocator.free(cache_time_str);
+            // Use stack buffer for ct formatting
+
+            var cache_time_buffer: [32]u8 = undefined;
+
+            const cache_time_str = Bot.formatI64(ct, &cache_time_buffer);
             try params.put("cache_time", cache_time_str);
         }
 
@@ -2606,8 +2756,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("title", title);
@@ -2625,8 +2778,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
         try params.put("description", description);
@@ -2644,8 +2800,11 @@ pub const methods = struct {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
         defer params.deinit();
 
-        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
+        // Use stack buffer for chat_id formatting
+
+        var chat_id_buffer: [32]u8 = undefined;
+
+        const chat_id_str = Bot.formatI64(chat_id, &chat_id_buffer);
 
         try params.put("chat_id", chat_id_str);
 
