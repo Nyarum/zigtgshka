@@ -24,7 +24,6 @@
 - 🛡️ **Memory Safety**: Explicit allocator usage with guaranteed cleanup
 - ⚡ **Zero Cost Abstractions**: Compile-time optimizations
 - 🔒 **Type Safety**: Comprehensive error handling with Zig's error unions
-- 🧵 **Async Ready**: Built for Zig's async/await (when stable)
 
 🤖 **Complete Bot API Support**
 - 📨 **Message Handling**: Send, receive, edit, and delete messages
@@ -39,7 +38,6 @@
 - 🔄 **State Management**: Built-in conversation flow handling
 - 📈 **Statistics**: Built-in metrics and performance tracking
 - 🐛 **Debug Support**: Comprehensive logging and error reporting
-- 🧪 **Test Suite**: Extensive unit and integration tests
 
 ## 🚀 Quick Start
 
@@ -52,7 +50,7 @@
 **Option 1: Using Zig Package Manager (Recommended)**
 ```bash
 # Add to your build.zig.zon
-zig fetch --save https://github.com/Nyarum/zigtgshka.git
+zig fetch --save git+https://github.com/Nyarum/zigtgshka.git
 
 # Then update your build.zig to add the dependency:
 # const telegram_dep = b.dependency("zigtgshka", .{});
