@@ -104,6 +104,7 @@
 const std = @import("std");
 const json = std.json;
 const Allocator = std.mem.Allocator;
+const utils = @import("utils.zig");
 
 /// Error types that can occur during Bot API operations
 pub const BotError = error{
@@ -1104,7 +1105,6 @@ pub const methods = struct {
 
         // Handle from field
         if (message_obj.get("from")) |from_val| {
-            const utils = @import("utils.zig");
             result.from = try utils.parseUser(bot.allocator, from_val);
         } else {
             result.from = null;
@@ -1112,7 +1112,6 @@ pub const methods = struct {
 
         // Handle chat field
         if (message_obj.get("chat")) |chat_val| {
-            const utils = @import("utils.zig");
             result.chat = try utils.parseChat(bot.allocator, chat_val);
         } else {
             return BotError.JSONError; // Chat is required
@@ -1127,7 +1126,6 @@ pub const methods = struct {
 
         // Handle entities field
         if (message_obj.get("entities")) |entities_val| {
-            const utils = @import("utils.zig");
             result.entities = try utils.parseMessageEntities(bot.allocator, entities_val);
         } else {
             result.entities = null;
@@ -1263,7 +1261,6 @@ pub const methods = struct {
 
         // Handle from field
         if (message_obj.get("from")) |from_val| {
-            const utils = @import("utils.zig");
             result.from = try utils.parseUser(bot.allocator, from_val);
         } else {
             result.from = null;
@@ -1271,7 +1268,6 @@ pub const methods = struct {
 
         // Handle chat field
         if (message_obj.get("chat")) |chat_val| {
-            const utils = @import("utils.zig");
             result.chat = try utils.parseChat(bot.allocator, chat_val);
         } else {
             return BotError.JSONError; // Chat is required
@@ -1286,7 +1282,6 @@ pub const methods = struct {
 
         // Handle entities field
         if (message_obj.get("entities")) |entities_val| {
-            const utils = @import("utils.zig");
             result.entities = try utils.parseMessageEntities(bot.allocator, entities_val);
         } else {
             result.entities = null;
@@ -1399,7 +1394,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1495,7 +1489,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1579,7 +1572,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1716,7 +1708,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1759,7 +1750,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1820,7 +1810,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -1853,7 +1842,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         const chat_ptr = try utils.parseChat(bot.allocator, parsed.value.result);
         defer bot.allocator.destroy(chat_ptr);
         return chat_ptr.*;
@@ -2171,7 +2159,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2317,7 +2304,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2379,7 +2365,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2430,7 +2415,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2511,7 +2495,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2572,7 +2555,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2615,7 +2597,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2663,7 +2644,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2693,7 +2673,6 @@ pub const methods = struct {
         const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        const utils = @import("utils.zig");
         return utils.parseMessage(bot.allocator, parsed.value.result);
     }
 
@@ -2884,7 +2863,6 @@ pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
         std.debug.print("Field {s}: {any}\n", .{ key, val });
     }
 
-    const utils = @import("utils.zig");
     return Update{
         .update_id = if (obj.get("update_id")) |id| @intCast(id.integer) else return BotError.JSONError,
         .message = if (obj.get("message")) |msg| try utils.parseMessage(allocator, msg) else null,
