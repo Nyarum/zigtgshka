@@ -55,11 +55,43 @@ pub fn build(b: *std.Build) void {
 
     const run_main_tests = b.addRunArtifact(main_tests);
 
+    // Add tests for json.zig module
+    const json_tests = b.addTest(.{
+        .root_source_file = b.path("src/json.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    json_tests.linkLibC();
+
+    const run_json_tests = b.addRunArtifact(json_tests);
+
+    // Add tests for utils.zig module (if it has tests)
+    const utils_tests = b.addTest(.{
+        .root_source_file = b.path("src/utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    utils_tests.linkLibC();
+
+    const run_utils_tests = b.addRunArtifact(utils_tests);
+
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
-    const test_step = b.step("test", "Run library tests");
+    const test_step = b.step("test", "Run all library tests");
     test_step.dependOn(&run_main_tests.step);
+    test_step.dependOn(&run_json_tests.step);
+    test_step.dependOn(&run_utils_tests.step);
+
+    // Individual test steps for granular testing
+    const test_main_step = b.step("test-main", "Run tests for telegram.zig");
+    test_main_step.dependOn(&run_main_tests.step);
+
+    const test_json_step = b.step("test-json", "Run tests for json.zig");
+    test_json_step.dependOn(&run_json_tests.step);
+
+    const test_utils_step = b.step("test-utils", "Run tests for utils.zig");
+    test_utils_step.dependOn(&run_utils_tests.step);
 
     const docs = b.addInstallDirectory(.{
         .source_dir = lib.getEmittedDocs(),

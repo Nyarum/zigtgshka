@@ -34,6 +34,9 @@
 ///     var bot = try telegram.Bot.init(allocator, "YOUR_BOT_TOKEN", &client);
 ///     defer bot.deinit();
 ///
+///     // Enable debug mode to see API requests and responses (optional)
+///     bot.enableDebug();
+///
 ///     // Get bot information
 ///     const me = try bot.methods.getMe();
 ///     defer me.deinit(allocator);
@@ -102,9 +105,7 @@
 ///
 /// For the complete API reference, see: https://core.telegram.org/bots/api
 const std = @import("std");
-const json = std.json;
 const Allocator = std.mem.Allocator;
-const utils = @import("utils.zig");
 const json_utils = @import("json.zig");
 
 /// Error types that can occur during Bot API operations
@@ -159,6 +160,23 @@ pub const HTTPClient = struct {
 ///
 /// This is the primary interface for interacting with the Telegram Bot API.
 /// All API methods are available through the `methods` namespace.
+///
+/// ## Debug Mode
+/// The bot supports debug mode which enables detailed logging of API requests and responses.
+/// This is useful for debugging and development. Debug mode is disabled by default.
+///
+/// ```zig
+/// var bot = try Bot.init(allocator, "token", &client);
+/// bot.enableDebug();  // Enable debug output
+/// bot.disableDebug(); // Disable debug output
+/// ```
+///
+/// When debug mode is enabled, you'll see:
+/// - JSON request payloads sent to Telegram API
+/// - JSON responses received from Telegram API
+/// - API error messages with descriptions
+/// - Update parsing details
+///
 pub const Bot = struct {
     /// Bot authentication token from @BotFather
     token: []const u8,
@@ -172,6 +190,24 @@ pub const Bot = struct {
     self_user: ?*User,
     /// Memory allocator for bot operations
     allocator: Allocator,
+
+    /// Debug print function that respects the debug flag
+    /// Only prints if debug mode is enabled
+    fn debugPrint(self: *Bot, comptime fmt: []const u8, args: anytype) void {
+        if (self.debug) {
+            std.debug.print(fmt, args);
+        }
+    }
+
+    /// Enable debug mode for detailed API logging
+    pub fn enableDebug(self: *Bot) void {
+        self.debug = true;
+    }
+
+    /// Disable debug mode to suppress API logging
+    pub fn disableDebug(self: *Bot) void {
+        self.debug = false;
+    }
 
     // Helper functions for number formatting without heap allocation
     /// Format an i64 to string using a stack buffer
@@ -274,7 +310,7 @@ pub const Bot = struct {
             try self.allocator.dupe(u8, "{}");
         defer self.allocator.free(json_str);
 
-        std.debug.print("Request JSON: {s}\n", .{json_str});
+        self.debugPrint("Request JSON: {s}\n", .{json_str});
 
         if (json_str.len > 2) { // More than just "{}"
             req.transfer_encoding = .{ .content_length = json_str.len };
@@ -305,6 +341,14 @@ pub const Bot = struct {
     /// Simple cleanup for basic parameter maps
     fn cleanupParamsSimple(params: *std.StringHashMap([]const u8)) void {
         params.deinit();
+    }
+
+    /// Helper function to handle Telegram API response parsing with proper error conversion
+    fn parseAPIResponse(bot: *Bot, comptime T: type, response: []const u8) !T {
+        return json_utils.unmarshalTelegramResponse(T, bot.allocator, response) catch |err| switch (err) {
+            json_utils.JSONError.ParseError => return BotError.TelegramAPIError,
+            else => return err,
+        };
     }
 };
 
@@ -825,30 +869,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("getMe JSON response: {s}\n", .{response});
+        bot.debugPrint("getMe JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        // Parse response JSON for User data
-        const parsed = try std.json.parseFromSlice(struct { result: User }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        // Make a copy of the result
-        var result = parsed.value.result;
-        result.first_name = try bot.allocator.dupe(u8, result.first_name);
-        if (result.last_name) |name| result.last_name = try bot.allocator.dupe(u8, name);
-        if (result.username) |name| result.username = try bot.allocator.dupe(u8, name);
-        if (result.language_code) |code| result.language_code = try bot.allocator.dupe(u8, code);
-
-        return result;
+        // Use the generic unmarshalTelegramResponse method
+        const user = try bot.parseAPIResponse(User, response);
+        return user;
     }
 
     pub fn getUpdates(bot: *Bot, offset: i32, limit: i32, timeout: i32) ![]Update {
@@ -872,29 +897,10 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("getUpdates JSON response: {s}\n", .{response});
+        bot.debugPrint("getUpdates JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        // Parse response JSON into std.json.Value first
-        const parsed = try std.json.parseFromSlice(struct { result: []std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        // Make a copy of the result
-        var updates = try bot.allocator.alloc(Update, parsed.value.result.len);
-        for (parsed.value.result, 0..) |update_val, i| {
-            std.debug.print("Parsing update {d}:\n", .{i});
-            updates[i] = try parseUpdate(bot.allocator, update_val);
-        }
-
+        // Use the generic unmarshalTelegramResponse method for array
+        const updates = try bot.parseAPIResponse([]Update, response);
         return updates;
     }
 
@@ -924,19 +930,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("deleteWebhook JSON response: {s}\n", .{response});
+        bot.debugPrint("deleteWebhook JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        return true;
+        // Use the generic method - for boolean results, we can use a simple struct
+        const result = try bot.parseAPIResponse(bool, response);
+        return result;
     }
 
     /// Send text message
@@ -980,61 +978,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("sendMessage JSON response: {s}\n", .{response});
+        bot.debugPrint("sendMessage JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        // Parse response JSON into std.json.Value first
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        // Extract message data from JSON value
-        const message_obj = parsed.value.result.object;
-
-        var result: Message = undefined;
-        result.message_id = @intCast(message_obj.get("message_id").?.integer);
-        result.date = @intCast(message_obj.get("date").?.integer);
-
-        // Handle from field
-        if (message_obj.get("from")) |from_val| {
-            result.from = try utils.parseUser(bot.allocator, from_val);
-        } else {
-            result.from = null;
-        }
-
-        // Handle chat field
-        if (message_obj.get("chat")) |chat_val| {
-            result.chat = try utils.parseChat(bot.allocator, chat_val);
-        } else {
-            return BotError.JSONError; // Chat is required
-        }
-
-        // Handle text field
-        if (message_obj.get("text")) |text_val| {
-            result.text = try bot.allocator.dupe(u8, text_val.string);
-        } else {
-            result.text = null;
-        }
-
-        // Handle entities field
-        if (message_obj.get("entities")) |entities_val| {
-            result.entities = try utils.parseMessageEntities(bot.allocator, entities_val);
-        } else {
-            result.entities = null;
-        }
-
-        // Initialize pinned_message field to null (this should be explicit)
-        result.pinned_message = null;
-
-        return result;
+        // Use the generic unmarshalTelegramResponse method instead of manual parsing
+        const message = try bot.parseAPIResponse(Message, response);
+        return message;
     }
 
     /// Send text message with inline keyboard
@@ -1090,61 +1038,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("sendMessageWithKeyboard JSON response: {s}\n", .{response});
+        bot.debugPrint("sendMessageWithKeyboard JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        // Parse response JSON into std.json.Value first
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        // Extract message data from JSON value
-        const message_obj = parsed.value.result.object;
-
-        var result: Message = undefined;
-        result.message_id = @intCast(message_obj.get("message_id").?.integer);
-        result.date = @intCast(message_obj.get("date").?.integer);
-
-        // Handle from field
-        if (message_obj.get("from")) |from_val| {
-            result.from = try utils.parseUser(bot.allocator, from_val);
-        } else {
-            result.from = null;
-        }
-
-        // Handle chat field
-        if (message_obj.get("chat")) |chat_val| {
-            result.chat = try utils.parseChat(bot.allocator, chat_val);
-        } else {
-            return BotError.JSONError; // Chat is required
-        }
-
-        // Handle text field
-        if (message_obj.get("text")) |text_val| {
-            result.text = try bot.allocator.dupe(u8, text_val.string);
-        } else {
-            result.text = null;
-        }
-
-        // Handle entities field
-        if (message_obj.get("entities")) |entities_val| {
-            result.entities = try utils.parseMessageEntities(bot.allocator, entities_val);
-        } else {
-            result.entities = null;
-        }
-
-        // Initialize pinned_message field to null (this should be explicit)
-        result.pinned_message = null;
-
-        return result;
+        // Use the generic unmarshalTelegramResponse method instead of manual parsing
+        const message = try bot.parseAPIResponse(Message, response);
+        return message;
     }
 
     /// Answer callback query
@@ -1187,19 +1085,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("answerCallbackQuery JSON response: {s}\n", .{response});
+        bot.debugPrint("answerCallbackQuery JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        return true;
+        // Use the generic method - for boolean results, we can use a simple struct
+        const result = try bot.parseAPIResponse(bool, response);
+        return result;
     }
 
     // ===== NEW API METHODS =====
@@ -1238,17 +1128,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("forwardMessage", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        // Use the generic method - for boolean results, we can use a simple struct
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     /// Copy message from one chat to another
@@ -1285,17 +1167,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("copyMessage", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: struct { message_id: i32 } }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return parsed.value.result.message_id;
+        const result = try bot.parseAPIResponse(i32, response);
+        return result;
     }
 
     // Message editing
@@ -1333,17 +1206,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("editMessageText", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     /// Edit reply markup of a message
@@ -1388,17 +1252,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("editMessageReplyMarkup", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     /// Delete a message
@@ -1440,10 +1295,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("deleteMessage", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        return api_response.value.ok;
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     // Chat actions
@@ -1485,10 +1338,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendChatAction", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        return api_response.value.ok;
+        const result = try bot.parseAPIResponse(bool, response);
+        return result;
     }
 
     // Location and contact
@@ -1524,17 +1375,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendLocation", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     /// Send contact
@@ -1566,17 +1408,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendContact", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     // Polls
@@ -1613,17 +1446,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendPoll", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        const result = try bot.parseAPIResponse(Message, response);
+        return result;
     }
 
     // Chat management
@@ -1645,19 +1469,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("getChat", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        const chat_ptr = try utils.parseChat(bot.allocator, parsed.value.result);
-        defer bot.allocator.destroy(chat_ptr);
-        return chat_ptr.*;
+        const result = try bot.parseAPIResponse(Chat, response);
+        return result;
     }
 
     pub fn getChatMemberCount(bot: *Bot, chat_id: i64) !i32 {
@@ -1675,17 +1488,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("getChatMemberCount", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: i32 }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return parsed.value.result;
+        const result = try bot.parseAPIResponse(i32, response);
+        return result;
     }
 
     pub fn leaveChat(bot: *Bot, chat_id: i64) !bool {
@@ -1703,10 +1507,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("leaveChat", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        return api_response.value.ok;
+        const result = try bot.parseAPIResponse(bool, response);
+        return result;
     }
 
     // Chat member management
@@ -1731,10 +1533,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("banChatMember", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn unbanChatMember(bot: *Bot, chat_id: i64, user_id: i64) !bool {
@@ -1758,10 +1559,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("unbanChatMember", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     // Message pinning
@@ -1782,10 +1582,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("pinChatMessage", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn unpinChatMessage(bot: *Bot, chat_id: i64, message_id: ?i32) !bool {
@@ -1809,10 +1608,9 @@ pub const methods = struct {
 
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn unpinAllChatMessages(bot: *Bot, chat_id: i64) !bool {
@@ -1829,10 +1627,9 @@ pub const methods = struct {
 
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     // Bot commands
@@ -1843,25 +1640,8 @@ pub const methods = struct {
         const response = try bot.makeRequest("getMyCommands", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: []BotCommand }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        // Make deep copies of the commands
-        var commands = try bot.allocator.alloc(BotCommand, parsed.value.result.len);
-        for (parsed.value.result, 0..) |cmd, i| {
-            commands[i] = BotCommand{
-                .command = try bot.allocator.dupe(u8, cmd.command),
-                .description = try bot.allocator.dupe(u8, cmd.description),
-            };
-        }
-
+        // Use the generic method for array of BotCommand
+        const commands = try bot.parseAPIResponse([]BotCommand, response);
         return commands;
     }
 
@@ -1878,10 +1658,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("setMyCommands", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn deleteMyCommands(bot: *Bot) !bool {
@@ -1891,10 +1670,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("deleteMyCommands", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     // File operations
@@ -1907,18 +1685,10 @@ pub const methods = struct {
         const response = try bot.makeRequest("getFile", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: File }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
+        const result = try bot.parseAPIResponse(File, response);
 
         // Make deep copy
-        var file = parsed.value.result;
+        var file = result;
         file.file_id = try bot.allocator.dupe(u8, file.file_id);
         file.file_unique_id = try bot.allocator.dupe(u8, file.file_unique_id);
         if (file.file_path) |path| {
@@ -1947,17 +1717,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendDice", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     // Webhook management
@@ -1970,10 +1732,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("setWebhook", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn getWebhookInfo(bot: *Bot) !WebhookInfo {
@@ -1983,18 +1744,10 @@ pub const methods = struct {
         const response = try bot.makeRequest("getWebhookInfo", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
-
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: WebhookInfo }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
+        const result = try bot.parseAPIResponse(WebhookInfo, response);
 
         // Make deep copy
-        var webhook_info = parsed.value.result;
+        var webhook_info = result;
         webhook_info.url = try bot.allocator.dupe(u8, webhook_info.url);
         if (webhook_info.last_error_message) |msg| {
             webhook_info.last_error_message = try bot.allocator.dupe(u8, msg);
@@ -2037,17 +1790,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("getUserProfilePhotos", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(UserProfilePhotos, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: UserProfilePhotos }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return parsed.value.result;
+        return result;
     }
 
     // Send media by URL or file_id
@@ -2086,23 +1831,11 @@ pub const methods = struct {
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
-        std.debug.print("sendPhoto JSON response: {s}\n", .{response});
+        bot.debugPrint("sendPhoto JSON response: {s}\n", .{response});
 
-        // First check if the API call was successful
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        // Parse response JSON into std.json.Value first
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     /// Send audio file
@@ -2151,19 +1884,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendAudio", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     /// Send general file
@@ -2201,19 +1924,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendDocument", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     /// Send video file
@@ -2281,19 +1994,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendVideo", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            const error_msg = api_response.value.description orelse "Unknown API error";
-            std.debug.print("API Error: {s}\n", .{error_msg});
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     pub fn sendAnimation(bot: *Bot, chat_id: i64, animation: []const u8, caption: ?[]const u8, duration: ?i32, width: ?i32, height: ?i32) !Message {
@@ -2343,17 +2046,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendAnimation", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     pub fn sendVoice(bot: *Bot, chat_id: i64, voice: []const u8, caption: ?[]const u8, duration: ?i32) !Message {
@@ -2385,17 +2080,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendVoice", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     pub fn sendVideoNote(bot: *Bot, chat_id: i64, video_note: []const u8, duration: ?i32, length: ?i32) !Message {
@@ -2432,17 +2119,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendVideoNote", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     pub fn sendSticker(bot: *Bot, chat_id: i64, sticker: []const u8) !Message {
@@ -2461,17 +2140,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("sendSticker", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(Message, response);
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
-
-        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return utils.parseMessage(bot.allocator, parsed.value.result);
+        return result;
     }
 
     // Inline query support
@@ -2522,10 +2193,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("answerInlineQuery", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     // Advanced chat management
@@ -2545,10 +2215,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("setChatTitle", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn setChatDescription(bot: *Bot, chat_id: i64, description: []const u8) !bool {
@@ -2567,10 +2236,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("setChatDescription", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn exportChatInviteLink(bot: *Bot, chat_id: i64) ![]const u8 {
@@ -2587,17 +2255,10 @@ pub const methods = struct {
 
         const response = try bot.makeRequest("exportChatInviteLink", params);
         defer bot.allocator.free(response);
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
 
-        if (!api_response.value.ok) {
-            return BotError.TelegramAPIError;
-        }
+        const result = try bot.parseAPIResponse([]const u8, response);
 
-        const parsed = try std.json.parseFromSlice(struct { result: []const u8 }, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        return try bot.allocator.dupe(u8, parsed.value.result);
+        return result;
     }
 
     // Log out and close
@@ -2608,10 +2269,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("logOut", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 
     pub fn close(bot: *Bot) !bool {
@@ -2621,10 +2281,9 @@ pub const methods = struct {
         const response = try bot.makeRequest("close", params);
         defer bot.allocator.free(response);
 
-        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
-        defer api_response.deinit();
+        const result = try bot.parseAPIResponse(bool, response);
 
-        return api_response.value.ok;
+        return result;
     }
 };
 
@@ -2651,41 +2310,7 @@ pub const methods = struct {
 /// defer update.deinit(allocator);
 /// ```
 pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !Update {
-    if (value != .object) return BotError.JSONError;
-    const obj = value.object;
-
-    std.debug.print("Parsing Update with fields: {any}\n", .{obj.keys()});
-    for (obj.keys()) |key| {
-        const val = obj.get(key).?;
-        std.debug.print("Field {s}: {any}\n", .{ key, val });
-    }
-
-    return Update{
-        .update_id = if (obj.get("update_id")) |id| @intCast(id.integer) else return BotError.JSONError,
-        .message = if (obj.get("message")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .edited_message = if (obj.get("edited_message")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .channel_post = if (obj.get("channel_post")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .edited_channel_post = if (obj.get("edited_channel_post")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .business_message = if (obj.get("business_message")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .edited_business_message = if (obj.get("edited_business_message")) |msg| try utils.parseMessage(allocator, msg) else null,
-        .business_connection = if (obj.get("business_connection")) |val| val else null,
-        .deleted_business_messages = if (obj.get("deleted_business_messages")) |val| val else null,
-        .message_reaction = if (obj.get("message_reaction")) |val| val else null,
-        .message_reaction_count = if (obj.get("message_reaction_count")) |val| val else null,
-        .inline_query = if (obj.get("inline_query")) |val| val else null,
-        .chosen_inline_result = if (obj.get("chosen_inline_result")) |val| val else null,
-        .callback_query = if (obj.get("callback_query")) |val| try utils.parseCallbackQuery(allocator, val) else null,
-        .shipping_query = if (obj.get("shipping_query")) |val| val else null,
-        .pre_checkout_query = if (obj.get("pre_checkout_query")) |val| val else null,
-        .purchased_paid_media = if (obj.get("purchased_paid_media")) |val| val else null,
-        .poll = if (obj.get("poll")) |val| val else null,
-        .poll_answer = if (obj.get("poll_answer")) |val| val else null,
-        .my_chat_member = if (obj.get("my_chat_member")) |val| val else null,
-        .chat_member = if (obj.get("chat_member")) |val| val else null,
-        .chat_join_request = if (obj.get("chat_join_request")) |val| val else null,
-        .chat_boost = if (obj.get("chat_boost")) |val| val else null,
-        .removed_chat_boost = if (obj.get("removed_chat_boost")) |val| val else null,
-    };
+    return try json_utils.unmarshalTelegramResponse(Update, allocator, value);
 }
 
 // ===== UNIT TESTS =====
@@ -2811,10 +2436,7 @@ test "Update parsing from JSON" {
             \\}
         ;
 
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_string, .{});
-        defer parsed.deinit();
-
-        var update = try parseUpdate(allocator, parsed.value);
+        var update = try parseUpdate(allocator, json_string);
         defer update.deinit(allocator);
 
         try testing.expectEqual(@as(i32, 123456), update.update_id);
@@ -2845,10 +2467,7 @@ test "Update parsing from JSON" {
             \\}
         ;
 
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_string, .{});
-        defer parsed.deinit();
-
-        var update = try parseUpdate(allocator, parsed.value);
+        var update = try parseUpdate(allocator, json_string);
         defer update.deinit(allocator);
 
         try testing.expectEqual(@as(i32, 789012), update.update_id);
@@ -2862,8 +2481,8 @@ test "Update parsing from JSON" {
     // Test invalid JSON handling
     {
         const invalid_json = "{ invalid json }";
-        const result = std.json.parseFromSlice(std.json.Value, allocator, invalid_json, .{});
-        try testing.expectError(error.SyntaxError, result);
+        const result = parseUpdate(allocator, invalid_json);
+        try testing.expectError(BotError.JSONError, result);
     }
 }
 
@@ -2884,12 +2503,11 @@ test "API response structure parsing" {
             \\}
         ;
 
-        const parsed = try std.json.parseFromSlice(APIResponse, allocator, success_response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
+        const result = try json_utils.unmarshalTelegramResponse(APIResponse, allocator, success_response);
 
-        try testing.expectEqual(true, parsed.value.ok);
-        try testing.expect(parsed.value.error_code == null);
-        try testing.expect(parsed.value.description == null);
+        try testing.expectEqual(true, result.ok);
+        try testing.expect(result.error_code == null);
+        try testing.expect(result.description == null);
     }
 
     // Test error API response
@@ -2902,12 +2520,11 @@ test "API response structure parsing" {
             \\}
         ;
 
-        const parsed = try std.json.parseFromSlice(APIResponse, allocator, error_response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
+        const result = try json_utils.unmarshalTelegramResponse(APIResponse, allocator, error_response);
 
-        try testing.expectEqual(false, parsed.value.ok);
-        try testing.expectEqual(@as(i32, 400), parsed.value.error_code.?);
-        try testing.expectEqualStrings("Bad Request: chat not found", parsed.value.description.?);
+        try testing.expectEqual(false, result.ok);
+        try testing.expectEqual(@as(i32, 400), result.error_code.?);
+        try testing.expectEqualStrings("Bad Request: chat not found", result.description.?);
     }
 
     // Test APIResponseWithResult structure
@@ -2922,12 +2539,11 @@ test "API response structure parsing" {
             \\}
         ;
 
-        const parsed = try std.json.parseFromSlice(APIResponseWithResult, allocator, result_response, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
+        const result = try json_utils.unmarshalTelegramResponse(APIResponseWithResult, allocator, result_response);
 
-        try testing.expectEqual(true, parsed.value.ok);
-        try testing.expect(parsed.value.result != null);
-        try testing.expect(parsed.value.result.?.array.items.len == 2);
+        try testing.expectEqual(true, result.ok);
+        try testing.expect(result.result != null);
+        try testing.expect(result.result.?.array.items.len == 2);
     }
 }
 
