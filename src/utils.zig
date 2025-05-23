@@ -113,6 +113,10 @@ pub fn parseMessageEntity(allocator: Allocator, value: std.json.Value) !telegram
 }
 
 pub fn parseMessage(allocator: Allocator, value: std.json.Value) !telegram.Message {
+    return parseMessageWithDepth(allocator, value, 0);
+}
+
+fn parseMessageWithDepth(allocator: Allocator, value: std.json.Value, depth: u32) !telegram.Message {
     if (value != .object) return telegram.BotError.JSONError;
     const obj = value.object;
 
@@ -122,6 +126,9 @@ pub fn parseMessage(allocator: Allocator, value: std.json.Value) !telegram.Messa
         std.debug.print("Field {s}: {any}\n", .{ key, val });
     }
 
+    // Limit recursion depth to prevent stack overflow
+    const max_depth = 3;
+
     return telegram.Message{
         .message_id = if (obj.get("message_id")) |id| @intCast(id.integer) else return telegram.BotError.JSONError,
         .from = if (obj.get("from")) |from| try parseUser(allocator, from) else null,
@@ -129,6 +136,15 @@ pub fn parseMessage(allocator: Allocator, value: std.json.Value) !telegram.Messa
         .chat = if (obj.get("chat")) |chat| try parseChat(allocator, chat) else return telegram.BotError.JSONError,
         .text = if (obj.get("text")) |text| try allocator.dupe(u8, text.string) else null,
         .entities = if (obj.get("entities")) |entities| try parseMessageEntities(allocator, entities) else null,
+        .pinned_message = if (obj.get("pinned_message")) |pinned| blk: {
+            if (depth >= max_depth) {
+                std.debug.print("Max recursion depth reached for pinned_message, skipping\n", .{});
+                break :blk null;
+            }
+            const pinned_ptr = try allocator.create(telegram.Message);
+            pinned_ptr.* = try parseMessageWithDepth(allocator, pinned, depth + 1);
+            break :blk pinned_ptr;
+        } else null,
     };
 }
 
@@ -170,8 +186,8 @@ pub fn parseFile(allocator: Allocator, value: std.json.Value) !telegram.files.Fi
 }
 
 pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !telegram.Update {
-    if (value != .Object) return telegram.BotError.JSONError;
-    const obj = value.Object;
+    if (value != .object) return telegram.BotError.JSONError;
+    const obj = value.object;
 
     std.debug.print("Parsing Update with fields: {any}\n", .{obj.keys()});
     for (obj.keys()) |key| {
@@ -180,7 +196,7 @@ pub fn parseUpdate(allocator: Allocator, value: std.json.Value) !telegram.Update
     }
 
     return telegram.Update{
-        .update_id = if (obj.get("update_id")) |id| @intCast(id.Integer) else return telegram.BotError.JSONError,
+        .update_id = if (obj.get("update_id")) |id| @intCast(id.integer) else return telegram.BotError.JSONError,
         .message = if (obj.get("message")) |msg| try parseMessage(allocator, msg) else null,
         .edited_message = if (obj.get("edited_message")) |msg| try parseMessage(allocator, msg) else null,
         .channel_post = if (obj.get("channel_post")) |msg| try parseMessage(allocator, msg) else null,

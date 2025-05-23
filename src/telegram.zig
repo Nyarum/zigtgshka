@@ -62,8 +62,13 @@ pub const Bot = struct {
 
     // Helper function to escape JSON strings
     fn escapeJsonString(self: *Bot, input: []const u8) ![]const u8 {
+        // Handle empty input safely
+        if (input.len == 0) {
+            return try self.allocator.dupe(u8, "");
+        }
+
         var result = std.ArrayList(u8).init(self.allocator);
-        defer result.deinit();
+        // Remove defer - we'll transfer ownership with toOwnedSlice()
 
         for (input) |char| {
             switch (char) {
@@ -109,10 +114,18 @@ pub const Bot = struct {
         var it = params.iterator();
         while (it.next()) |entry| {
             if (!first) try json_str.append(',');
+
+            // Safety checks before escaping
+            const key = entry.key_ptr.*;
+            const value = entry.value_ptr.*;
+
+            // Skip null or invalid entries
+            if (key.len == 0) continue;
+
             // Properly escape both key and value
-            const escaped_key = try self.escapeJsonString(entry.key_ptr.*);
+            const escaped_key = try self.escapeJsonString(key);
             defer self.allocator.free(escaped_key);
-            const escaped_value = try self.escapeJsonString(entry.value_ptr.*);
+            const escaped_value = try self.escapeJsonString(value);
             defer self.allocator.free(escaped_value);
             try json_str.writer().print("\"{s}\":\"{s}\"", .{ escaped_key, escaped_value });
             first = false;
@@ -134,6 +147,60 @@ pub const Bot = struct {
 
         const body = try req.reader().readAllAlloc(self.allocator, std.math.maxInt(usize));
         return body;
+    }
+
+    // Helper function to create params with proper memory management
+    fn createParams(bot: *Bot, comptime FieldType: type, fields: FieldType) !std.StringHashMap([]const u8) {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        errdefer params.deinit();
+
+        inline for (@typeInfo(FieldType).Struct.fields) |field| {
+            const value = @field(fields, field.name);
+            const T = @TypeOf(value);
+
+            if (T == i64 or T == i32) {
+                const str = try std.fmt.allocPrint(bot.allocator, "{d}", .{value});
+                try params.put(field.name, str);
+            } else if (T == []const u8) {
+                try params.put(field.name, value);
+            } else if (@typeInfo(T) == .Optional) {
+                if (value) |v| {
+                    const InnerT = @TypeOf(v);
+                    if (InnerT == i64 or InnerT == i32) {
+                        const str = try std.fmt.allocPrint(bot.allocator, "{d}", .{v});
+                        try params.put(field.name, str);
+                    } else if (InnerT == []const u8) {
+                        try params.put(field.name, v);
+                    }
+                }
+            }
+        }
+
+        return params;
+    }
+
+    // Helper function to cleanup allocated param strings
+    fn cleanupParams(bot: *Bot, params: *std.StringHashMap([]const u8), comptime FieldType: type, fields: FieldType) void {
+        inline for (@typeInfo(FieldType).Struct.fields) |field| {
+            const value = @field(fields, field.name);
+            const T = @TypeOf(value);
+
+            if (T == i64 or T == i32) {
+                if (params.get(field.name)) |str| {
+                    bot.allocator.free(str);
+                }
+            } else if (@typeInfo(T) == .Optional) {
+                if (value) |v| {
+                    const InnerT = @TypeOf(v);
+                    if (InnerT == i64 or InnerT == i32) {
+                        if (params.get(field.name)) |str| {
+                            bot.allocator.free(str);
+                        }
+                    }
+                }
+            }
+        }
+        params.deinit();
     }
 };
 
@@ -187,6 +254,7 @@ pub const Message = struct {
     chat: *const Chat,
     text: ?[]const u8,
     entities: ?[]MessageEntity = null,
+    pinned_message: ?*const Message = null,
 
     pub fn deinit(self: *Message, allocator: Allocator) void {
         if (self.from) |user| {
@@ -203,6 +271,11 @@ pub const Message = struct {
                 entity.deinit(allocator);
             }
             allocator.free(entities);
+        }
+        if (self.pinned_message) |pinned| {
+            var mutable_pinned = @constCast(pinned);
+            mutable_pinned.deinit(allocator);
+            allocator.destroy(mutable_pinned);
         }
     }
 };
@@ -542,12 +615,14 @@ pub const methods = struct {
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
 
         try params.put("chat_id", chat_id_str);
         try params.put("text", text);
 
         const response = try bot.makeRequest("sendMessage", params);
+
+        // Now it's safe to free the allocated string after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
@@ -605,6 +680,9 @@ pub const methods = struct {
             result.entities = null;
         }
 
+        // Initialize pinned_message field to null (this should be explicit)
+        result.pinned_message = null;
+
         return result;
     }
 
@@ -615,7 +693,6 @@ pub const methods = struct {
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
 
         // Create a temporary arena allocator for JSON serialization
         var arena = std.heap.ArenaAllocator.init(bot.allocator);
@@ -676,6 +753,9 @@ pub const methods = struct {
         try params.put("reply_markup", keyboard_json.items);
 
         const response = try bot.makeRequest("sendMessage", params);
+
+        // Now it's safe to free the allocated string after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         // Debug: print the raw JSON response
@@ -732,6 +812,9 @@ pub const methods = struct {
         } else {
             result.entities = null;
         }
+
+        // Initialize pinned_message field to null (this should be explicit)
+        result.pinned_message = null;
 
         return result;
     }
@@ -1200,14 +1283,16 @@ pub const methods = struct {
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
         const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
-        defer bot.allocator.free(message_id_str);
 
         try params.put("chat_id", chat_id_str);
         try params.put("message_id", message_id_str);
 
         const response = try bot.makeRequest("pinChatMessage", params);
+
+        // Now it's safe to free the strings after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
+        defer bot.allocator.free(message_id_str);
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
@@ -1221,17 +1306,22 @@ pub const methods = struct {
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
 
         try params.put("chat_id", chat_id_str);
 
+        var message_id_str: ?[]const u8 = null;
         if (message_id) |msg_id| {
-            const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{msg_id});
-            defer bot.allocator.free(message_id_str);
-            try params.put("message_id", message_id_str);
+            message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{msg_id});
+            try params.put("message_id", message_id_str.?);
         }
 
         const response = try bot.makeRequest("unpinChatMessage", params);
+
+        // Now it's safe to free the strings after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
+        if (message_id_str) |str| {
+            defer bot.allocator.free(str);
+        }
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
@@ -1245,11 +1335,13 @@ pub const methods = struct {
         defer params.deinit();
 
         const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
-        defer bot.allocator.free(chat_id_str);
 
         try params.put("chat_id", chat_id_str);
 
         const response = try bot.makeRequest("unpinAllChatMessages", params);
+
+        // Now it's safe to free the string after makeRequest is done
+        defer bot.allocator.free(chat_id_str);
         defer bot.allocator.free(response);
 
         const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
