@@ -10,6 +10,8 @@
 
 *Build powerful bots with zero allocations in hot paths and compile-time guarantees*
 
+[![API Coverage](https://img.shields.io/badge/API%20Coverage-85%25-brightgreen?style=for-the-badge)](API_METHODS_IMPLEMENTED.md)
+
 [🚀 Quick Start](#-quick-start) • [📚 Examples](#-examples) • [🎯 Features](#-features) • [📖 Documentation](#-documentation)
 
 </div>

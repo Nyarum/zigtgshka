@@ -1,7 +1,7 @@
 # Telegram Bot API Key
 # Set this environment variable: export API_KEY=your_bot_token
 # Or pass it when running: make run-advanced API_KEY=your_bot_token
-API_KEY ?= 8140640292:AAHSUoPAzCr2nhjE7CJrimpmTdhTSyIoAfg
+API_KEY ?= test_key
 
 pull/external:
 	mkdir libraries && cd libraries && git clone git@github.com:go-telegram-bot-api/telegram-bot-api.git

@@ -341,6 +341,97 @@ pub const APIResponseWithResult = struct {
     }
 };
 
+// Bot command definition
+pub const BotCommand = struct {
+    command: []const u8,
+    description: []const u8,
+
+    pub fn deinit(self: *BotCommand, allocator: Allocator) void {
+        allocator.free(self.command);
+        allocator.free(self.description);
+    }
+};
+
+// File information
+pub const File = struct {
+    file_id: []const u8,
+    file_unique_id: []const u8,
+    file_size: ?i32 = null,
+    file_path: ?[]const u8 = null,
+
+    pub fn deinit(self: *File, allocator: Allocator) void {
+        allocator.free(self.file_id);
+        allocator.free(self.file_unique_id);
+        if (self.file_path) |path| allocator.free(path);
+    }
+};
+
+// Webhook information
+pub const WebhookInfo = struct {
+    url: []const u8,
+    has_custom_certificate: bool,
+    pending_update_count: i32,
+    ip_address: ?[]const u8 = null,
+    last_error_date: ?i64 = null,
+    last_error_message: ?[]const u8 = null,
+    last_synchronization_error_date: ?i64 = null,
+    max_connections: ?i32 = null,
+    allowed_updates: ?[][]const u8 = null,
+
+    pub fn deinit(self: *WebhookInfo, allocator: Allocator) void {
+        allocator.free(self.url);
+        if (self.ip_address) |ip| allocator.free(ip);
+        if (self.last_error_message) |msg| allocator.free(msg);
+        if (self.allowed_updates) |updates| {
+            for (updates) |update| {
+                allocator.free(update);
+            }
+            allocator.free(updates);
+        }
+    }
+};
+
+// Photo size
+pub const PhotoSize = struct {
+    file_id: []const u8,
+    file_unique_id: []const u8,
+    width: i32,
+    height: i32,
+    file_size: ?i32 = null,
+
+    pub fn deinit(self: *PhotoSize, allocator: Allocator) void {
+        allocator.free(self.file_id);
+        allocator.free(self.file_unique_id);
+    }
+};
+
+// User profile photos
+pub const UserProfilePhotos = struct {
+    total_count: i32,
+    photos: [][]PhotoSize,
+
+    pub fn deinit(self: *UserProfilePhotos, allocator: Allocator) void {
+        for (self.photos) |photo_row| {
+            for (photo_row) |*photo| {
+                photo.deinit(allocator);
+            }
+            allocator.free(photo_row);
+        }
+        allocator.free(self.photos);
+    }
+};
+
+// Inline query result (base type - this would need specific implementations)
+pub const InlineQueryResult = struct {
+    type: []const u8,
+    id: []const u8,
+
+    pub fn deinit(self: *InlineQueryResult, allocator: Allocator) void {
+        allocator.free(self.type);
+        allocator.free(self.id);
+    }
+};
+
 pub const methods = struct {
     pub fn getMe(bot: *Bot) !User {
         var params = std.StringHashMap([]const u8).init(bot.allocator);
@@ -675,6 +766,1158 @@ pub const methods = struct {
         }
 
         return true;
+    }
+
+    // ===== NEW API METHODS =====
+
+    // Message forwarding and copying
+    pub fn forwardMessage(bot: *Bot, chat_id: i64, from_chat_id: i64, message_id: i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const from_chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{from_chat_id});
+        defer bot.allocator.free(from_chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("from_chat_id", from_chat_id_str);
+        try params.put("message_id", message_id_str);
+
+        const response = try bot.makeRequest("forwardMessage", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn copyMessage(bot: *Bot, chat_id: i64, from_chat_id: i64, message_id: i32) !i32 {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const from_chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{from_chat_id});
+        defer bot.allocator.free(from_chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("from_chat_id", from_chat_id_str);
+        try params.put("message_id", message_id_str);
+
+        const response = try bot.makeRequest("copyMessage", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: struct { message_id: i32 } }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        return parsed.value.result.message_id;
+    }
+
+    // Message editing
+    pub fn editMessageText(bot: *Bot, chat_id: i64, message_id: i32, text: []const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("message_id", message_id_str);
+        try params.put("text", text);
+
+        const response = try bot.makeRequest("editMessageText", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn editMessageReplyMarkup(bot: *Bot, chat_id: i64, message_id: i32, keyboard: ?InlineKeyboardMarkup) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("message_id", message_id_str);
+
+        if (keyboard) |kb| {
+            var arena = std.heap.ArenaAllocator.init(bot.allocator);
+            defer arena.deinit();
+            const arena_allocator = arena.allocator();
+
+            var keyboard_json = std.ArrayList(u8).init(arena_allocator);
+            defer keyboard_json.deinit();
+
+            try keyboard_json.appendSlice("{\"inline_keyboard\":[");
+            for (kb.inline_keyboard, 0..) |row, row_index| {
+                if (row_index > 0) try keyboard_json.append(',');
+                try keyboard_json.append('[');
+                for (row, 0..) |button, button_index| {
+                    if (button_index > 0) try keyboard_json.append(',');
+                    try keyboard_json.append('{');
+
+                    const escaped_text = try bot.escapeJsonString(button.text);
+                    defer bot.allocator.free(escaped_text);
+                    try keyboard_json.writer().print("\"text\":\"{s}\"", .{escaped_text});
+
+                    if (button.callback_data) |data| {
+                        const escaped_data = try bot.escapeJsonString(data);
+                        defer bot.allocator.free(escaped_data);
+                        try keyboard_json.writer().print(",\"callback_data\":\"{s}\"", .{escaped_data});
+                    }
+
+                    try keyboard_json.append('}');
+                }
+                try keyboard_json.append(']');
+            }
+            try keyboard_json.appendSlice("]}");
+
+            try params.put("reply_markup", keyboard_json.items);
+        } else {
+            try params.put("reply_markup", "{}");
+        }
+
+        const response = try bot.makeRequest("editMessageReplyMarkup", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn deleteMessage(bot: *Bot, chat_id: i64, message_id: i32) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("message_id", message_id_str);
+
+        const response = try bot.makeRequest("deleteMessage", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Chat actions
+    pub fn sendChatAction(bot: *Bot, chat_id: i64, action: []const u8) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("action", action);
+
+        const response = try bot.makeRequest("sendChatAction", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Location and contact
+    pub fn sendLocation(bot: *Bot, chat_id: i64, latitude: f64, longitude: f64) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const latitude_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{latitude});
+        defer bot.allocator.free(latitude_str);
+        const longitude_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{longitude});
+        defer bot.allocator.free(longitude_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("latitude", latitude_str);
+        try params.put("longitude", longitude_str);
+
+        const response = try bot.makeRequest("sendLocation", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendContact(bot: *Bot, chat_id: i64, phone_number: []const u8, first_name: []const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("phone_number", phone_number);
+        try params.put("first_name", first_name);
+
+        const response = try bot.makeRequest("sendContact", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    // Polls
+    pub fn sendPoll(bot: *Bot, chat_id: i64, question: []const u8, options: [][]const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        // Create options JSON array
+        var arena = std.heap.ArenaAllocator.init(bot.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var options_json = std.ArrayList(u8).init(arena_allocator);
+        defer options_json.deinit();
+
+        try options_json.append('[');
+        for (options, 0..) |option, i| {
+            if (i > 0) try options_json.append(',');
+            const escaped_option = try bot.escapeJsonString(option);
+            defer bot.allocator.free(escaped_option);
+            try options_json.writer().print("\"{s}\"", .{escaped_option});
+        }
+        try options_json.append(']');
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("question", question);
+        try params.put("options", options_json.items);
+
+        const response = try bot.makeRequest("sendPoll", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    // Chat management
+    pub fn getChat(bot: *Bot, chat_id: i64) !Chat {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        const response = try bot.makeRequest("getChat", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        const chat_ptr = try utils.parseChat(bot.allocator, parsed.value.result);
+        defer bot.allocator.destroy(chat_ptr);
+        return chat_ptr.*;
+    }
+
+    pub fn getChatMemberCount(bot: *Bot, chat_id: i64) !i32 {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        const response = try bot.makeRequest("getChatMemberCount", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: i32 }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        return parsed.value.result;
+    }
+
+    pub fn leaveChat(bot: *Bot, chat_id: i64) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        const response = try bot.makeRequest("leaveChat", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Chat member management
+    pub fn banChatMember(bot: *Bot, chat_id: i64, user_id: i64) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
+        defer bot.allocator.free(user_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("user_id", user_id_str);
+
+        const response = try bot.makeRequest("banChatMember", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn unbanChatMember(bot: *Bot, chat_id: i64, user_id: i64) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
+        defer bot.allocator.free(user_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("user_id", user_id_str);
+
+        const response = try bot.makeRequest("unbanChatMember", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Message pinning
+    pub fn pinChatMessage(bot: *Bot, chat_id: i64, message_id: i32) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+        const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{message_id});
+        defer bot.allocator.free(message_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("message_id", message_id_str);
+
+        const response = try bot.makeRequest("pinChatMessage", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn unpinChatMessage(bot: *Bot, chat_id: i64, message_id: ?i32) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        if (message_id) |msg_id| {
+            const message_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{msg_id});
+            defer bot.allocator.free(message_id_str);
+            try params.put("message_id", message_id_str);
+        }
+
+        const response = try bot.makeRequest("unpinChatMessage", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn unpinAllChatMessages(bot: *Bot, chat_id: i64) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        const response = try bot.makeRequest("unpinAllChatMessages", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Bot commands
+    pub fn getMyCommands(bot: *Bot) ![]BotCommand {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const response = try bot.makeRequest("getMyCommands", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: []BotCommand }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        // Make deep copies of the commands
+        var commands = try bot.allocator.alloc(BotCommand, parsed.value.result.len);
+        for (parsed.value.result, 0..) |cmd, i| {
+            commands[i] = BotCommand{
+                .command = try bot.allocator.dupe(u8, cmd.command),
+                .description = try bot.allocator.dupe(u8, cmd.description),
+            };
+        }
+
+        return commands;
+    }
+
+    pub fn setMyCommands(bot: *Bot, commands: []const BotCommand) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        // Create commands JSON array
+        var arena = std.heap.ArenaAllocator.init(bot.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var commands_json = std.ArrayList(u8).init(arena_allocator);
+        defer commands_json.deinit();
+
+        try commands_json.append('[');
+        for (commands, 0..) |cmd, i| {
+            if (i > 0) try commands_json.append(',');
+            const escaped_command = try bot.escapeJsonString(cmd.command);
+            defer bot.allocator.free(escaped_command);
+            const escaped_description = try bot.escapeJsonString(cmd.description);
+            defer bot.allocator.free(escaped_description);
+            try commands_json.writer().print("{{\"command\":\"{s}\",\"description\":\"{s}\"}}", .{ escaped_command, escaped_description });
+        }
+        try commands_json.append(']');
+
+        try params.put("commands", commands_json.items);
+
+        const response = try bot.makeRequest("setMyCommands", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn deleteMyCommands(bot: *Bot) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const response = try bot.makeRequest("deleteMyCommands", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // File operations
+    pub fn getFile(bot: *Bot, file_id: []const u8) !File {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        try params.put("file_id", file_id);
+
+        const response = try bot.makeRequest("getFile", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: File }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        // Make deep copy
+        var file = parsed.value.result;
+        file.file_id = try bot.allocator.dupe(u8, file.file_id);
+        file.file_unique_id = try bot.allocator.dupe(u8, file.file_unique_id);
+        if (file.file_path) |path| {
+            file.file_path = try bot.allocator.dupe(u8, path);
+        }
+
+        return file;
+    }
+
+    // Dice
+    pub fn sendDice(bot: *Bot, chat_id: i64, emoji: ?[]const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        if (emoji) |e| {
+            try params.put("emoji", e);
+        }
+
+        const response = try bot.makeRequest("sendDice", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    // Webhook management
+    pub fn setWebhook(bot: *Bot, url: []const u8) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        try params.put("url", url);
+
+        const response = try bot.makeRequest("setWebhook", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn getWebhookInfo(bot: *Bot) !WebhookInfo {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const response = try bot.makeRequest("getWebhookInfo", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: WebhookInfo }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        // Make deep copy
+        var webhook_info = parsed.value.result;
+        webhook_info.url = try bot.allocator.dupe(u8, webhook_info.url);
+        if (webhook_info.last_error_message) |msg| {
+            webhook_info.last_error_message = try bot.allocator.dupe(u8, msg);
+        }
+
+        return webhook_info;
+    }
+
+    // User profile photos
+    pub fn getUserProfilePhotos(bot: *Bot, user_id: i64, offset: ?i32, limit: ?i32) !UserProfilePhotos {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const user_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{user_id});
+        defer bot.allocator.free(user_id_str);
+
+        try params.put("user_id", user_id_str);
+
+        if (offset) |o| {
+            const offset_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{o});
+            defer bot.allocator.free(offset_str);
+            try params.put("offset", offset_str);
+        }
+
+        if (limit) |l| {
+            const limit_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{l});
+            defer bot.allocator.free(limit_str);
+            try params.put("limit", limit_str);
+        }
+
+        const response = try bot.makeRequest("getUserProfilePhotos", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: UserProfilePhotos }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        return parsed.value.result;
+    }
+
+    // Send media by URL or file_id
+    pub fn sendPhoto(bot: *Bot, chat_id: i64, photo: []const u8, caption: ?[]const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("photo", photo);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        const response = try bot.makeRequest("sendPhoto", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendAudio(bot: *Bot, chat_id: i64, audio: []const u8, caption: ?[]const u8, duration: ?i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("audio", audio);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        if (duration) |dur| {
+            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
+            defer bot.allocator.free(duration_str);
+            try params.put("duration", duration_str);
+        }
+
+        const response = try bot.makeRequest("sendAudio", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendDocument(bot: *Bot, chat_id: i64, document: []const u8, caption: ?[]const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("document", document);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        const response = try bot.makeRequest("sendDocument", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendVideo(bot: *Bot, chat_id: i64, video: []const u8, caption: ?[]const u8, duration: ?i32, width: ?i32, height: ?i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("video", video);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        if (duration) |dur| {
+            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
+            defer bot.allocator.free(duration_str);
+            try params.put("duration", duration_str);
+        }
+
+        if (width) |w| {
+            const width_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{w});
+            defer bot.allocator.free(width_str);
+            try params.put("width", width_str);
+        }
+
+        if (height) |h| {
+            const height_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{h});
+            defer bot.allocator.free(height_str);
+            try params.put("height", height_str);
+        }
+
+        const response = try bot.makeRequest("sendVideo", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendAnimation(bot: *Bot, chat_id: i64, animation: []const u8, caption: ?[]const u8, duration: ?i32, width: ?i32, height: ?i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("animation", animation);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        if (duration) |dur| {
+            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
+            defer bot.allocator.free(duration_str);
+            try params.put("duration", duration_str);
+        }
+
+        if (width) |w| {
+            const width_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{w});
+            defer bot.allocator.free(width_str);
+            try params.put("width", width_str);
+        }
+
+        if (height) |h| {
+            const height_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{h});
+            defer bot.allocator.free(height_str);
+            try params.put("height", height_str);
+        }
+
+        const response = try bot.makeRequest("sendAnimation", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendVoice(bot: *Bot, chat_id: i64, voice: []const u8, caption: ?[]const u8, duration: ?i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("voice", voice);
+
+        if (caption) |cap| {
+            try params.put("caption", cap);
+        }
+
+        if (duration) |dur| {
+            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
+            defer bot.allocator.free(duration_str);
+            try params.put("duration", duration_str);
+        }
+
+        const response = try bot.makeRequest("sendVoice", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendVideoNote(bot: *Bot, chat_id: i64, video_note: []const u8, duration: ?i32, length: ?i32) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("video_note", video_note);
+
+        if (duration) |dur| {
+            const duration_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{dur});
+            defer bot.allocator.free(duration_str);
+            try params.put("duration", duration_str);
+        }
+
+        if (length) |len| {
+            const length_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{len});
+            defer bot.allocator.free(length_str);
+            try params.put("length", length_str);
+        }
+
+        const response = try bot.makeRequest("sendVideoNote", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    pub fn sendSticker(bot: *Bot, chat_id: i64, sticker: []const u8) !Message {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("sticker", sticker);
+
+        const response = try bot.makeRequest("sendSticker", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: std.json.Value }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const utils = @import("utils.zig");
+        return utils.parseMessage(bot.allocator, parsed.value.result);
+    }
+
+    // Inline query support
+    pub fn answerInlineQuery(bot: *Bot, inline_query_id: []const u8, results: []const InlineQueryResult, cache_time: ?i32, is_personal: ?bool, next_offset: ?[]const u8) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        try params.put("inline_query_id", inline_query_id);
+
+        // Serialize results array to JSON
+        var arena = std.heap.ArenaAllocator.init(bot.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var results_json = std.ArrayList(u8).init(arena_allocator);
+        defer results_json.deinit();
+
+        try results_json.append('[');
+        for (results, 0..) |result, i| {
+            if (i > 0) try results_json.append(',');
+            // This would need proper serialization based on result type
+            // For now, this is a placeholder
+            _ = result; // Suppress unused variable warning
+            try results_json.appendSlice("{}");
+        }
+        try results_json.append(']');
+
+        try params.put("results", results_json.items);
+
+        if (cache_time) |ct| {
+            const cache_time_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{ct});
+            defer bot.allocator.free(cache_time_str);
+            try params.put("cache_time", cache_time_str);
+        }
+
+        if (is_personal) |ip| {
+            const is_personal_str = if (ip) "true" else "false";
+            try params.put("is_personal", is_personal_str);
+        }
+
+        if (next_offset) |no| {
+            try params.put("next_offset", no);
+        }
+
+        const response = try bot.makeRequest("answerInlineQuery", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    // Advanced chat management
+    pub fn setChatTitle(bot: *Bot, chat_id: i64, title: []const u8) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("title", title);
+
+        const response = try bot.makeRequest("setChatTitle", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn setChatDescription(bot: *Bot, chat_id: i64, description: []const u8) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+        try params.put("description", description);
+
+        const response = try bot.makeRequest("setChatDescription", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn exportChatInviteLink(bot: *Bot, chat_id: i64) ![]const u8 {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const chat_id_str = try std.fmt.allocPrint(bot.allocator, "{d}", .{chat_id});
+        defer bot.allocator.free(chat_id_str);
+
+        try params.put("chat_id", chat_id_str);
+
+        const response = try bot.makeRequest("exportChatInviteLink", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        if (!api_response.value.ok) {
+            return BotError.TelegramAPIError;
+        }
+
+        const parsed = try std.json.parseFromSlice(struct { result: []const u8 }, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        return try bot.allocator.dupe(u8, parsed.value.result);
+    }
+
+    // Log out and close
+    pub fn logOut(bot: *Bot) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const response = try bot.makeRequest("logOut", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
+    }
+
+    pub fn close(bot: *Bot) !bool {
+        var params = std.StringHashMap([]const u8).init(bot.allocator);
+        defer params.deinit();
+
+        const response = try bot.makeRequest("close", params);
+        defer bot.allocator.free(response);
+
+        const api_response = try std.json.parseFromSlice(APIResponse, bot.allocator, response, .{ .ignore_unknown_fields = true });
+        defer api_response.deinit();
+
+        return api_response.value.ok;
     }
 };
 
