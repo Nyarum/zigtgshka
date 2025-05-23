@@ -156,7 +156,7 @@ pub fn main() !void {
     defer bot.deinit();
 
     // 🎉 Get bot info and start polling
-    const me = try telegram.methods.getMe(&bot);
+    var me = try telegram.methods.getMe(&bot);
     defer me.deinit(allocator);
     
     std.debug.print("🚀 Bot @{s} is online!\n", .{me.username orelse me.first_name});
@@ -176,7 +176,7 @@ pub fn main() !void {
             if (update.message) |message| {
                 if (message.text) |text| {
                     // 💬 Echo messages back
-                    const reply = try telegram.methods.sendMessage(&bot, message.chat.id, text);
+                    var reply = try telegram.methods.sendMessage(&bot, message.chat.id, text);
                     defer reply.deinit(allocator);
                     
                     std.debug.print("📨 Echoed: {s}\n", .{text});
