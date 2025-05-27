@@ -5,7 +5,6 @@
 [![Zig](https://img.shields.io/badge/Zig-0.14.0+-F7A41D?style=for-the-badge&logo=zig&logoColor=white)](https://ziglang.org/)
 [![Telegram Bot API](https://img.shields.io/badge/Bot%20API-7.0+-2AABEE?style=for-the-badge&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-![Dynamic Regex Badge](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fdeepwiki.com%2FNyarum%2Fzigtgshka%2F1-overview&search=zigtgshka&style=plastic&logo=wiki&label=WIKI&color=red)
 
 
 **A memory-safe, high-performance Telegram Bot API implementation in Zig**
@@ -14,7 +13,7 @@
 
 [![API Coverage](https://img.shields.io/badge/API%20Coverage-85%25-brightgreen?style=for-the-badge)](API_METHODS_IMPLEMENTED.md)
 
-[🚀 Quick Start](#-quick-start) • [📚 Examples](#-examples) • [🎯 Features](#-features) • [📖 Documentation](#-documentation)
+[🚀 Quick Start](#-quick-start) • [📚 Examples](#-examples) • [🎯 Features](#-features) • [📖 DeepWiki](https://deepwiki.com/Nyarum/zigtgshka/1-overview)
 
 </div>
 
